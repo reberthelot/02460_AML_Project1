@@ -375,48 +375,92 @@ if __name__ == "__main__":
         # Save model
         torch.save(model.state_dict(), 'output_PartA/'+args.model)
     
-    elif args.mode =='test':
+    elif args.mode == 'test':
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from sklearn.decomposition import PCA
+        import numpy as np
+
+        sns.set_theme(style="whitegrid", context="talk")
+        
+        # 1. Chargement du modèle
+        model.load_state_dict(torch.load('output_PartA/' + args.model, map_location=torch.device(args.device)))
+        model.eval()
+        
         all_z = []
         all_labels = []
-        total_elbo = 0
-        model.load_state_dict(torch.load('output_PartA/'+args.model, map_location=torch.device(args.device)))
-
-        model.eval()
+        
+        print("Encoding test data...")
         with torch.no_grad():
             for x, y in tqdm(mnist_test_loader):
                 x = x.to(device)
-                batch_elbo = model.elbo(x)
-                total_elbo += batch_elbo.item() * x.size(0) # le size(0) permet de pondérer par la taille du batch
                 q = model.encoder(x)
-                z = q.rsample()
-                all_z.append(z.cpu())
+                all_z.append(q.mean.cpu()) 
                 all_labels.append(y)
-
-        mean_elbo = total_elbo / len(mnist_test_loader.dataset)
-        print(f"\nTest Set ELBO: {mean_elbo:.4f}")
-
-        # Plots
-        import matplotlib.pyplot as plt
-        from sklearn.decomposition import PCA
+            
+            print(f"Sampling from {args.prior} prior...")
+            z_prior = model.prior.sample(torch.Size([100000])).cpu()
 
         all_z_cat = torch.cat(all_z, dim=0)
         all_labels_cat = torch.cat(all_labels, dim=0)
 
-        if M>2:
-            print("PCA processing...")
-            pca = PCA(n_components=2)
-            z_viz = pca.fit_transform(all_z_cat)
-        else:
-            z_viz = all_z_cat
+        pca = PCA(n_components=2)
+        combined = torch.cat([all_z_cat, z_prior], dim=0)
+        pca.fit(combined)
+        
+        z_viz = pca.transform(all_z_cat)
+        z_prior_viz = pca.transform(z_prior)
 
-        plt.figure(figsize=(10,10))
-        scatter = plt.scatter(z_viz[:,0], z_viz[:,1], c=all_labels_cat)
-        plt.colorbar(scatter, label='Digit Class')
-        plt.title("2D projection of the latent space")
-        plt.xlabel("Component 1")
-        plt.ylabel("Component 2")
-        plt.savefig('output_PartA/'+args.samples)
-        print("Figure saved")
+        fig, ax = plt.subplots(figsize=(14, 11))
+        
+        cmap = plt.get_cmap('tab10', 10)
+
+        scatter = ax.scatter(
+            z_viz[:, 0], z_viz[:, 1], 
+            c=all_labels_cat, 
+            cmap=cmap, 
+            s=45,               
+            alpha=0.75,         
+            edgecolors='none', 
+            vmin=-0.5, vmax=9.5,
+            zorder=1
+        )
+
+        sns.kdeplot(
+            x=z_prior_viz[:, 0], y=z_prior_viz[:, 1], 
+            fill=False,         
+            thresh=0.01,        
+            levels=12,          
+            color="black",      
+            linewidths=2.5,     
+            alpha=0.8,          
+            ax=ax,
+            zorder=2
+        )
+
+        all_data_viz = np.vstack([z_viz, z_prior_viz])
+        xlims = np.percentile(all_data_viz[:, 0], [0.5, 99.5])
+        ylims = np.percentile(all_data_viz[:, 1], [0.5, 99.5])
+        margin = 1.15
+        ax.set_xlim(xlims[0] * margin, xlims[1] * margin)
+        ax.set_ylim(ylims[0] * margin, ylims[1] * margin)
+
+        cbar = plt.colorbar(scatter, ax=ax, ticks=range(10))
+        cbar.set_label('MNIST Digit Class', fontweight='bold', labelpad=15)
+        cbar.ax.set_yticklabels([f'{i}' for i in range(10)])
+        cbar.ax.tick_params(size=0)
+        cbar.set_alpha(1.0)
+
+        ax.set_title(f"VAE Latent Space: Prior Contours over Aggregate Posterior\nPrior: {args.prior.upper()} | Dim: {args.latent_dim}", 
+                     fontsize=18, pad=20, fontweight='bold')
+        ax.set_xlabel("Principal Component 1", fontsize=14)
+        ax.set_ylabel("Principal Component 2", fontsize=14)
+        
+        sns.despine(offset=10, trim=True)
+        ax.grid(True, linestyle='--', alpha=0.2)
+
+        plt.savefig('output_PartA/' + args.samples, dpi=300, bbox_inches='tight')
+        print(f"Figure saved in output_PartA/{args.samples}")
         
 
 
