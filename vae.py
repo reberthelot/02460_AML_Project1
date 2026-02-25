@@ -12,6 +12,54 @@ from torch.nn import functional as F
 from tqdm import tqdm
 import flow as flow
 
+# Different prior types - Gaussian, MoG and Flow-based
+class GaussianPrior(nn.Module):
+    def __init__(self, M):
+        """
+        Define a Gaussian prior distribution with zero mean and unit variance.
+
+                Parameters:
+        M: [int] 
+           Dimension of the latent space.
+        """
+        super(GaussianPrior, self).__init__()
+        self.M = M
+        self.mean = nn.Parameter(torch.zeros(self.M), requires_grad=False)
+        self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
+
+    def log_prob(self, z):
+        # On calcule directement sans passer par un forward interne
+        return td.Independent(td.Normal(self.mean, self.std), 1).log_prob(z)
+
+    def sample(self, shape):
+        return td.Independent(td.Normal(self.mean, self.std), 1).sample(shape)
+
+class MoGPrior(nn.Module):
+    def __init__(self, M, K=10):
+        """
+        Define a Gaussian prior distribution with zero mean and unit variance.
+
+                Parameters:
+        M: [int] 
+           Dimension of the latent space.
+        """
+        super(MoGPrior, self).__init__()
+        self.M = M
+        self.K = K
+        self.mean = nn.Parameter(torch.randn(K, M))
+        self.std_log = nn.Parameter(torch.zeros(K, M))
+        self.mixture_logits = nn.Parameter(torch.zeros(K))
+
+    def log_prob(self, z):
+        mix = td.Categorical(logits=self.mixture_logits)
+        comp = td.Independent(td.Normal(self.mean, torch.exp(self.std_log)), 1)
+        return td.MixtureSameFamily(mix, comp).log_prob(z)
+
+    def sample(self, shape):
+        mix = td.Categorical(logits=self.mixture_logits)
+        comp = td.Independent(td.Normal(self.mean, torch.exp(self.std_log)), 1)
+        return td.MixtureSameFamily(mix, comp).sample(shape)
+
 class FlowPrior(flow.Flow):
     def __init__(self,base,transformation):
         """
@@ -22,8 +70,8 @@ class FlowPrior(flow.Flow):
            Dimension of the latent space.
         """
         super(FlowPrior, self).__init__(base, transformation)
-    # def forward(self, z):
-    #     return self.
+    
+
 
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
@@ -153,6 +201,7 @@ class VAE(nn.Module):
         z = q.rsample()
 
         log_q = q.log_prob(z)
+
         log_p_prior = self.prior.log_prob(z)
 
         elbo = torch.mean(self.decoder(z).log_prob(x) - (log_q - log_p_prior) , dim=0)
@@ -227,6 +276,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model_Flow_cont.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -234,6 +284,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
+    parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
 
     #python week2/02460_week2_vae.py train --model model_flow.pt --device cuda --batch-size 64 --epochs 10 --latent-dim 32
     #python week2/02460_week2_vae.py test --model model_flow.pt --device cuda --samples latent_space_flow.png --latent-dim 32
@@ -257,32 +308,37 @@ if __name__ == "__main__":
 
     # Define prior distribution
     M = args.latent_dim
-    base = flow.GaussianBase(M)
-
-
-    # Define transformations
-    transformations = []    
-    num_transformations = 12
-    num_hidden = 256
-
-    # Create the transformation mask
-    if args.mask_type == 'checkerboard':
-        mask = torch.Tensor([1 if (i) % 2 == 0 else 0 for i in range(M)])
-    elif args.mask_type == 'channelwise':
-        mask = torch.zeros((M,))
-        mask[M//2:] = 1
-
-    # Create the transformation layers
-    for i in range(num_transformations):
-        if args.mask_type == 'randominit':
-            mask = torch.randint(0, 2, (M,))
-        else :
-            mask = (1-mask) # Flip the mask
-        scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
-        translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
-        transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, mask))
     
-    prior = FlowPrior(base,transformations)
+    #prior type selection
+    if args.prior == 'gaussian':
+        prior = GaussianPrior(M)
+    elif args.prior == 'mog':
+        prior = MoGPrior(M, args.K)
+    else: # flowbase prior
+        base = flow.GaussianBase(M)
+        # Define transformations
+        transformations = []    
+        num_transformations = 12
+        num_hidden = 256
+
+        # Create the transformation mask
+        if args.mask_type == 'checkerboard':
+            mask = torch.Tensor([1 if (i) % 2 == 0 else 0 for i in range(M)])
+        elif args.mask_type == 'channelwise':
+            mask = torch.zeros((M,))
+            mask[M//2:] = 1
+
+        # Create the transformation layers
+        for i in range(num_transformations):
+            if args.mask_type == 'randominit':
+                mask = torch.randint(0, 2, (M,))
+            else :
+                mask = (1-mask) # Flip the mask
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+            transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, mask))
+            
+        prior = FlowPrior(base,transformations)
 
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
@@ -317,13 +373,13 @@ if __name__ == "__main__":
         train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
-        torch.save(model.state_dict(), args.model)
+        torch.save(model.state_dict(), 'output_PartA/'+args.model)
     
     elif args.mode =='test':
         all_z = []
         all_labels = []
         total_elbo = 0
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.load_state_dict(torch.load('output_PartA/'+args.model, map_location=torch.device(args.device)))
 
         model.eval()
         with torch.no_grad():
@@ -359,7 +415,7 @@ if __name__ == "__main__":
         plt.title("2D projection of the latent space")
         plt.xlabel("Component 1")
         plt.ylabel("Component 2")
-        plt.savefig(args.samples)
+        plt.savefig('output_PartA/'+args.samples)
         print("Figure saved")
         
 
@@ -368,10 +424,10 @@ if __name__ == "__main__":
 
 
     elif args.mode == 'sample':
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.load_state_dict(torch.load('output_PartA/'+args.model, map_location=torch.device(args.device)))
         model.eval()
         with torch.no_grad():
             # Génère 64 images (les moyennes de p(x|z))
             samples = model.sample(64).cpu() 
             # On sauvegarde les moyennes directement
-            save_image(samples.view(64, 1, 28, 28), args.samples)
+            save_image(samples.view(64, 1, 28, 28), 'output_PartA/'+args.samples)
