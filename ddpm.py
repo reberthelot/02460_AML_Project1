@@ -179,15 +179,8 @@ if __name__ == "__main__":
     sys.path.append(project_root_dir)
     import ToyData as ToyData
 
-    # python week3/ddpm.py train --data tg --model model_ddpm.pt --device cuda --epochs 10
-    # python week3/ddpm.py sample --data tg --model model_ddpm.pt --device cuda --samples sample_ddpm_tg.png
-
-
-    # python week3/ddpm.py train --data cb --model model_ddpm.pt --device cuda
-    # python week3/ddpm.py sample --data cb --model model_ddpm.pt --device cuda --samples sample_ddpm_cb.png
-    
-    # python week3/ddpm.py train --data mnist --model model_ddpm_mnist.pt --device cuda --epochs 30 --batch-size 64 --network unet --lr 1e-3
-    # python week3/ddpm.py sample --data mnist --model model_ddpm.pt --device cuda --samples sample_ddpm_mnist.png
+    # python ddpm.py train --data mnist --model model_ddpm_mnist.pt --device cuda --epochs 30 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm.py sample --data mnist --model model_ddpm.pt --device cuda --samples sample_ddpm_mnist.png
     
     
     # Parse arguments
@@ -195,6 +188,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
+    parser.add_argument('--binarized', type=bool, default=False, choices=[True, False], help='Whether or not to binarize the images (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -203,6 +197,8 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
     parser.add_argument('--network', type=str, default='fully', choices=['unet', 'fully'], help='Choose the network type (default: %(default)s)')
     parser.add_argument('--T', type=float, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
+    parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau', choices=['ReduceLROnPlateau', 'ExponentialLR','CosineAnnealingLR'], help='Scheduler to Use (default: %(default)s)')
+
 
 
     args = parser.parse_args()
@@ -213,7 +209,7 @@ if __name__ == "__main__":
     # Generate the data
     n_data = 10000000
     if args.data == 'mnist':
-        toy = ToyData.MNIST(batch_size=args.batch_size,diffusion=True)
+        toy = ToyData.MNIST(batch_size=args.batch_size,diffusion=not(args.binarized),binarized=args.binarized)
         train_loader = toy.train_loader
         test_loader = toy.test_loader
         
@@ -270,8 +266,12 @@ if __name__ == "__main__":
     if args.mode == 'train':
         # Define optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
+        if args.scheduler == 'CosineAnnealingLR':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        elif args.scheduler == 'ExponentialLR':
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+        elif args.scheduler == 'ReduceLROnPlateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
         # Train model
         train(model, optimizer, train_loader, args.epochs, args.device, scheduler)
