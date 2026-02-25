@@ -381,63 +381,89 @@ if __name__ == "__main__":
         from sklearn.decomposition import PCA
         import numpy as np
 
+        # Set visual style for publication-quality plots
         sns.set_theme(style="whitegrid", context="talk")
         
-        # 1. Chargement du modèle
+        # 1. Load the trained model and set to evaluation mode
         model.load_state_dict(torch.load('output_PartA/' + args.model, map_location=torch.device(args.device)))
         model.eval()
         
         all_z = []
         all_labels = []
+        total_elbo = 0
+        num_batches = 0
         
-        print("Encoding test data...")
+        # 2. Encode test data and calculate ELBO
+        print(f"Evaluating model and encoding test data on {device}...")
         with torch.no_grad():
             for x, y in tqdm(mnist_test_loader):
                 x = x.to(device)
+                
+                # Compute batch ELBO (returns the mean ELBO for the current batch)
+                batch_elbo = model.elbo(x)
+                total_elbo += batch_elbo.item()
+                num_batches += 1
+                
+                # Use the mean of the encoder distribution for cleaner visualization
                 q = model.encoder(x)
                 all_z.append(q.mean.cpu()) 
                 all_labels.append(y)
             
+            # 3. Sample from the Prior to visualize its density
             print(f"Sampling from {args.prior} prior...")
-            z_prior = model.prior.sample(torch.Size([100000])).cpu()
+            z_prior = model.prior.sample(torch.Size([10000])).cpu()
+
+        # Compute final average ELBO across all test batches
+        avg_elbo = total_elbo / num_batches
+        print(f"\n[Test Result] Average ELBO: {avg_elbo:.4f}")
 
         all_z_cat = torch.cat(all_z, dim=0)
         all_labels_cat = torch.cat(all_labels, dim=0)
 
+        # 4. Dimensionality Reduction using PCA
+        # We fit PCA on the union of posterior and prior to ensure a shared coordinate system
         pca = PCA(n_components=2)
-        combined = torch.cat([all_z_cat, z_prior], dim=0)
-        pca.fit(combined)
+        combined_data = torch.cat([all_z_cat, z_prior], dim=0)
+        pca.fit(combined_data)
         
         z_viz = pca.transform(all_z_cat)
         z_prior_viz = pca.transform(z_prior)
 
+        # --- Plotting Construction ---
         fig, ax = plt.subplots(figsize=(14, 11))
         
-        cmap = plt.get_cmap('tab10', 10)
+        # Define a discrete 10-color palette for MNIST digits
+        discrete_cmap = plt.get_cmap('tab10', 10)
 
+        # 5. Plot the Posterior (POINTS) - zorder=1 (background)
+        # alpha is set to 0.8 for visibility, but colorbar will be forced to 1.0 later
         scatter = ax.scatter(
             z_viz[:, 0], z_viz[:, 1], 
             c=all_labels_cat, 
-            cmap=cmap, 
-            s=45,               
-            alpha=0.75,         
+            cmap=discrete_cmap, 
+            s=45,               # Larger points for clarity
+            alpha=0.8,          
             edgecolors='none', 
             vmin=-0.5, vmax=9.5,
             zorder=1
         )
 
+        # 6. Plot the Prior (CONTOURS) - zorder=2 (on top of points)
+        # We use a solid black color and thick lines to ensure they "cut" through the points
         sns.kdeplot(
             x=z_prior_viz[:, 0], y=z_prior_viz[:, 1], 
-            fill=False,         
+            fill=False,         # Line contours only
             thresh=0.01,        
-            levels=12,          
-            color="black",      
-            linewidths=2.5,     
-            alpha=0.8,          
+            levels=12,          # Number of density levels
+            color="black",      # High contrast against colors
+            linewidths=2.5,     # Thick lines for visibility
+            alpha=0.85,         
             ax=ax,
             zorder=2
         )
 
+        # 7. Intelligent Axis Scaling
+        # Use percentiles to avoid outliers (common in Flow priors) squashing the main plot
         all_data_viz = np.vstack([z_viz, z_prior_viz])
         xlims = np.percentile(all_data_viz[:, 0], [0.5, 99.5])
         ylims = np.percentile(all_data_viz[:, 1], [0.5, 99.5])
@@ -445,20 +471,26 @@ if __name__ == "__main__":
         ax.set_xlim(xlims[0] * margin, xlims[1] * margin)
         ax.set_ylim(ylims[0] * margin, ylims[1] * margin)
 
-        cbar = plt.colorbar(scatter, ax=ax, ticks=range(10))
-        cbar.set_label('MNIST Digit Class', fontweight='bold', labelpad=15)
-        cbar.ax.set_yticklabels([f'{i}' for i in range(10)])
-        cbar.ax.tick_params(size=0)
+        # 8. Enhanced Categorical Colorbar
+        cbar = fig.colorbar(scatter, ax=ax, ticks=range(10))
+        # Force colorbar opacity to 1.0 to make colors more vibrant than the points
         cbar.set_alpha(1.0)
+        cbar.draw_all() 
+        
+        cbar.set_label('MNIST Digit Class', fontweight='bold', labelpad=15)
+        cbar.ax.set_yticklabels([f'Digit {i}' for i in range(10)])
+        cbar.ax.tick_params(size=0) # Remove ticks for a cleaner modern look
 
-        ax.set_title(f"VAE Latent Space: Prior Contours over Aggregate Posterior\nPrior: {args.prior.upper()} | Dim: {args.latent_dim}", 
+        # 9. Title and Labels
+        ax.set_title(f"VAE Latent Space Analysis ({args.prior.upper()})\nTest ELBO: {avg_elbo:.2f}", 
                      fontsize=18, pad=20, fontweight='bold')
-        ax.set_xlabel("Principal Component 1", fontsize=14)
-        ax.set_ylabel("Principal Component 2", fontsize=14)
+        ax.set_xlabel("Principal Component 1")
+        ax.set_ylabel("Principal Component 2")
         
         sns.despine(offset=10, trim=True)
         ax.grid(True, linestyle='--', alpha=0.2)
 
+        # Save and output
         plt.savefig('output_PartA/' + args.samples, dpi=300, bbox_inches='tight')
         print(f"Figure saved in output_PartA/{args.samples}")
         
