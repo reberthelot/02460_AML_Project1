@@ -152,6 +152,8 @@ def train(model, optimizer, data_loader, epochs, device, scheduler=None):
     progress_bar = tqdm(range(total_steps), desc="Training")
 
     for epoch in range(epochs):
+        total_epoch_loss = 0.0
+        num_batches = 0
         data_iter = iter(data_loader)
         for x in data_iter:
             if isinstance(x, (list, tuple)):
@@ -161,12 +163,16 @@ def train(model, optimizer, data_loader, epochs, device, scheduler=None):
             loss = model.loss(x)
             loss.backward()
             optimizer.step()
+            
+            total_epoch_loss += loss.item()
+            num_batches += 1
 
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
         if scheduler is not None:
-            scheduler.step() # Update learning rate after each epoch
-
-
-
+            avg_epoch_loss = total_epoch_loss / num_batches if num_batches > 0 else 0.0
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(avg_epoch_loss) # Update learning rate based on epoch loss
+            else:
+                scheduler.step() # Update learning rate after each epoch

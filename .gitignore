@@ -4,7 +4,11 @@
 
 # Output folder
 output_PartA/
+<<<<<<< HEAD
 output_PartA_old/
+=======
+output_PartB/
+>>>>>>> fde79e3afe70c204f729c428446b17d16ca95188
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
