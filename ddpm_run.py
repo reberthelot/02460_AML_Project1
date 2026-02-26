@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.distributions as td
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import os
 from tqdm import tqdm
 from ddpm import DDPM, FcNetwork, train
 import MNIST as MNIST
@@ -12,7 +14,7 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 30 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 10 --batch-size 64 --network unet --lr 1e-3
     # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
     
 
@@ -21,6 +23,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
     
+    parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
+    parser.add_argument('--saved-folder',type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
+
     parser.add_argument('--binarized', type=bool, default=False, choices=[True, False], help='Whether or not to binarize the images (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -100,7 +105,7 @@ if __name__ == "__main__":
             scheduler = None
 
         # Train model
-        train(model, optimizer, train_loader, args.epochs, args.device, scheduler)
+        loss_history = train(model, optimizer, train_loader, args.epochs, args.device, scheduler)
 
         # Save model
         save_dict = {
@@ -110,10 +115,28 @@ if __name__ == "__main__":
         }
         if args.network == 'fully':
             save_dict['num_hidden'] = num_hidden
-        torch.save(save_dict, args.model)
+
+        # Ensure output_PartB directory exists for plots
+        os.makedirs(args.saved_folder, exist_ok=True)
+
+        # Determine plot filename
+        if args.plotname:
+            plot_filename = args.plotname
+        else: # Derive from model name, e.g., model_ddpm_mnist.pt -> loss_model_ddpm_mnist.png
+            model_base_name = os.path.splitext(args.model)[0]
+            plot_filename = f"loss_{model_base_name}.png"
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(loss_history)
+        plt.title("Training Loss Evolution")
+        plt.xlabel("Training Step")
+        plt.ylabel("Loss")
+        plt.grid(True)
+        plt.savefig(os.path.join(args.saved_folder, plot_filename))
+        print(f"Loss plot saved to {os.path.join(args.saved_folder,args.model)}")
+        torch.save(save_dict, os.path.join(args.saved_folder,args.model))
 
     elif args.mode == 'sample':
-        import matplotlib.pyplot as plt
         import numpy as np
 
         # Load the model
@@ -136,4 +159,4 @@ if __name__ == "__main__":
             samples = model.sample((64,D)).cpu()
             if not(args.binarized): # Diffusion
                 samples = samples / 2 + 0.5 # Reverse transformation
-            save_image(samples.view(64, 1, 28, 28), 'output_PartB/'+args.samples)
+            save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder,args.samples))
