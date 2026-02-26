@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 50 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm_run.py train --model model_ddpm_mnist_mog.pt --beta-vae model_mog_run_2.pt --device cuda --epochs 50 --batch-size 64 --lr 1e-3
 
 
     # Parse arguments
@@ -61,11 +61,15 @@ if __name__ == "__main__":
         import flow # Nécessaire pour FlowPrior et ses composants
         
         # Load the model
-        vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
-        vae_state_dict = vae_checkpoint['model_state_dict']
-        vae_args = argparse.Namespace(**vae_checkpoint['args']) 
+        # vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
+        # vae_state_dict = vae_checkpoint['model_state_dict']
+        # vae_args = argparse.Namespace(**vae_checkpoint['args']) 
 
         # Temporary hardcode
+        vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
+        vae_state_dict = vae_checkpoint
+        vae_args = argparse.Namespace(**{})#**vae_checkpoint['args'])
+        vae_args.K = 32
         vae_args.latent_dim = 32
         vae_args.prior = 'mog'
         vae_args.beta = 1
@@ -105,6 +109,19 @@ if __name__ == "__main__":
             vae_prior = FlowPrior(base,transformations)
         else:
             raise ValueError(f"Type de prior inconnu: {vae_args.prior}")
+        
+        # Transform keys in vae_state_dict to match the current VAE model structure
+        new_vae_state_dict = {}
+        for key, value in vae_state_dict.items():
+            if key.startswith('decoder.decoder_net.') and '.network.' not in key:
+                new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
+                new_vae_state_dict[new_key] = value
+            elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
+                new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
+                new_vae_state_dict[new_key] = value
+            else:
+                new_vae_state_dict[key] = value
+        vae_state_dict = new_vae_state_dict # Update to the transformed state_dict
 
         # Reconstruct temporary encoder and decoder
         temp_encoder = GaussianEncoder(VAEEncoderNet(M))

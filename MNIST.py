@@ -101,11 +101,12 @@ class LatentMNIST:
                 # Assuming VAE returns (z, mu, logvar) or just z
                 # We typically use 'mu' or a sample 'z' for the latent representation
                 res = encoder(x)
-                z = res[0] if isinstance(res, (tuple, list)) else res
+                # z = res[0] if isinstance(res, (tuple, list)) else res
+                # # The encoder returns a distribution object, we need its mean for the latent representation
+                z = res.mean
                 
                 all_z.append(z.cpu())
                 all_y.append(y)
-        
         # Create a new TensorDataset so fetching is lightning fast
         latent_ds = TensorDataset(torch.cat(all_z), torch.cat(all_y))
         return DataLoader(latent_ds, batch_size=self.batch_size, shuffle=True)
