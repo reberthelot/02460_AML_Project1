@@ -4,6 +4,7 @@
 # - https://github.com/jmtomczak/intro_dgm/blob/main/vaes/vae_example.ipynb
 # - https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
 
+import MNIST
 import torch
 import torch.nn as nn
 import torch.distributions as td
@@ -13,6 +14,7 @@ from tqdm import tqdm
 import flow as flow
 import random
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Different prior types - Gaussian, MoG and Flow-based
 class GaussianPrior(nn.Module):
@@ -123,11 +125,19 @@ class GaussianEncoder(nn.Module):
         return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1)
 
 
-class GaussianDecoder(nn.Module):
-    def __init__(self, decoder_net, sigma=0.1): # sigma=0.1 est une bonne valeur de départ
-        super(GaussianDecoder, self).__init__()
+class BernoulliDecoder(nn.Module):
+    def __init__(self, decoder_net):
+        """
+        Define a Bernoulli decoder distribution based on a given decoder network.
+
+        Parameters: 
+        encoder_net: [torch.nn.Module]             
+           The decoder network that takes as a tensor of dim `(batch_size, M) as
+           input, where M is the dimension of the latent space, and outputs a
+           tensor of dimension (batch_size, feature_dim1, feature_dim2).
+        """
+        super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
-        self.sigma = sigma
 
     def forward(self, z):
         """
@@ -137,14 +147,8 @@ class GaussianDecoder(nn.Module):
         z: [torch.Tensor] 
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
-        # On récupère les paramètres du réseau
-        # out aura une forme (batch_size, 2, 28, 28)
-        # Le réseau ne sort plus que la moyenne (batch_size, 28, 28)
-        mean = self.decoder_net(z)
-        
-        # On définit un écart-type fixe (scalaire ou tenseur de même taille)
-        # La valeur 0.1 est appliquée à chaque pixel
-        return td.Independent(td.Normal(loc=mean, scale=self.sigma), 2)
+        logits = self.decoder_net(z)
+        return td.Independent(td.Bernoulli(logits=logits), 2)
 
 class VAE(nn.Module):
     """
@@ -205,8 +209,11 @@ class VAE(nn.Module):
         log_q = q.log_prob(z)
 
         log_p_prior = self.prior.log_prob(z)
+        x_reshaped = x.view(-1, 28, 28) 
 
-        elbo = torch.mean(self.decoder(z).log_prob(x) - (log_q - log_p_prior) , dim=0)
+        log_p_x_z = self.decoder(z).log_prob(x_reshaped)
+
+        elbo = torch.mean(log_p_x_z - (log_q - log_p_prior) , dim=0)
         return elbo
 
     def sample(self, n_samples=1):
@@ -254,6 +261,8 @@ def train(model, optimizer, data_loader, epochs, device):
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
 
+    elbo_history = []
+
     for epoch in range(epochs):
         data_iter = iter(data_loader)
         for x in data_iter:
@@ -263,10 +272,12 @@ def train(model, optimizer, data_loader, epochs, device):
             loss.backward()
             optimizer.step()
 
+            elbo_history.append(-loss.item())
+
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
-
+    return elbo_history
 
 
 if __name__ == "__main__":
@@ -310,14 +321,9 @@ if __name__ == "__main__":
 
 
     # Load MNIST as binarized at 'thresshold' and create data loaders
-    thresshold = 0.5
-    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=True, download=True,
-                                                                    transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-                                                    batch_size=args.batch_size, shuffle=True)
-    mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=False, download=True,
-                                                                transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-                                                    batch_size=args.batch_size, shuffle=True)
-
+    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(True),binarized=True)
+    mnist_train_loader = data.train_loader
+    mnist_test_loader = data.test_loader
     # Define prior distribution
     M = args.latent_dim
     
@@ -372,7 +378,7 @@ if __name__ == "__main__":
     )
 
     # Define VAE model
-    decoder = GaussianDecoder(decoder_net)
+    decoder = BernoulliDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
     model = VAE(prior, decoder, encoder).to(device)
 
@@ -382,16 +388,32 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Train model
-        train(model, optimizer, mnist_train_loader, args.epochs, args.device)
+        history = train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
         torch.save(model.state_dict(), 'output_PartA/'+args.model)
+
+        #Plottingt training loss
+        plt.figure(figsize=(10, 6))
+        plt.plot(history, label='ELBO', color='royalblue', alpha=0.8)
+        plt.xlabel('Iterations')
+        plt.ylabel('ELBO')
+        plt.title(f'ELBO Evolution - Prior: {args.prior.upper()}')
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend()
+
+        plot_filename = args.model.replace('.pt', '') + '_elbo.png'
+        plot_path = 'output_PartA/' + plot_filename
+        
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"ELBO plot saved to: {plot_path}")
     
     elif args.mode == 'test':
         import matplotlib.pyplot as plt
         import seaborn as sns
         from sklearn.decomposition import PCA
         import numpy as np
+        from matplotlib.lines import Line2D
 
         # Set visual style for publication-quality plots
         sns.set_theme(style="whitegrid", context="talk")
@@ -473,6 +495,14 @@ if __name__ == "__main__":
             ax=ax,
             zorder=2
         )
+
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Aggregate Posterior (q(z|x))',
+                   markerfacecolor='gray', markersize=10),
+            Line2D([0], [0], color='black', lw=2.5, label='Prior (p(z))')
+        ]
+        
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=12, frameon=True, shadow=True)
 
         # 7. Intelligent Axis Scaling
         # Use percentiles to avoid outliers (common in Flow priors) squashing the main plot
