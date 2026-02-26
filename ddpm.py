@@ -149,6 +149,7 @@ def train(model, optimizer, data_loader, epochs, device, scheduler=None):
         raise TypeError("scheduler must be a torch.optim.lr_scheduler.LRScheduler instance or None")
 
     total_steps = len(data_loader)*epochs
+    loss_history = []
     progress_bar = tqdm(range(total_steps), desc="Training")
 
     for epoch in range(epochs):
@@ -167,6 +168,7 @@ def train(model, optimizer, data_loader, epochs, device, scheduler=None):
             total_epoch_loss += loss.item()
             num_batches += 1
 
+            loss_history.append(loss.item())
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
@@ -176,3 +178,4 @@ def train(model, optimizer, data_loader, epochs, device, scheduler=None):
                 scheduler.step(avg_epoch_loss) # Update learning rate based on epoch loss
             else:
                 scheduler.step() # Update learning rate after each epoch
+    return loss_history

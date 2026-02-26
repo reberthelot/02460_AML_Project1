@@ -14,6 +14,7 @@ from tqdm import tqdm
 import flow as flow
 import random
 import numpy as np
+import os
 import matplotlib.pyplot as plt
 
 # Different prior types - Gaussian, MoG and Flow-based
@@ -32,7 +33,6 @@ class GaussianPrior(nn.Module):
         self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
 
     def log_prob(self, z):
-        # On calcule directement sans passer par un forward interne
         return td.Independent(td.Normal(self.mean, self.std), 1).log_prob(z)
 
     def sample(self, shape):
@@ -75,8 +75,6 @@ class FlowPrior(flow.Flow):
         """
         super(FlowPrior, self).__init__(base, transformation)
     
-
-
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
         """
@@ -88,6 +86,7 @@ class GaussianEncoder(nn.Module):
            feature_dim1, feature_dim2)` and output a tensor of dimension
            `(batch_size, 2M)`, where M is the dimension of the latent space.
         """
+
         super(GaussianEncoder, self).__init__()
         self.encoder_net = encoder_net
 
@@ -99,31 +98,9 @@ class GaussianEncoder(nn.Module):
         x: [torch.Tensor] 
            A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
         """
-        """
-        1. Sortie du réseau (encoder_net) :
-           Le réseau produit un vecteur de taille 2*M (ex: 64 si M=32).
-           M est la dimension de l'espace latent (le nombre de "curseurs" qui 
-           décrivent l'image).
-
-        2. torch.chunk(..., 2, dim=-1) :
-           On coupe ce vecteur en deux parties égales de taille M :
-           - mean (mu) : Les M premières valeurs (position dans l'espace latent).
-           - std (log_sigma) : Les M dernières valeurs (incertitude sur chaque dimension).
-
-        3. Paramétrisation de la distribution :
-           - loc=mean : La moyenne de la gaussienne pour chaque dimension latente.
-           - scale=torch.exp(std) : On passe à l'exponentielle pour garantir que
-             l'écart-type soit toujours POSITIF (le réseau prédit en fait un log-sigma).
-           
-        4. td.Independent(..., 1) :
-           On traite ces M dimensions comme un seul vecteur aléatoire multidimensionnel.
-        """
-
-        # C'est ici qu'on a le reparametrization trick !
 
         mean, std = torch.chunk(self.encoder_net(x), 2, dim=-1)
         return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1)
-
 
 class BernoulliDecoder(nn.Module):
     def __init__(self, decoder_net):
@@ -154,7 +131,7 @@ class VAE(nn.Module):
     """
     Define a Variational Autoencoder (VAE) model.
     """
-    def __init__(self, prior, decoder, encoder):
+    def __init__(self, prior, decoder, encoder,beta):
         """
         Parameters:
         prior: [torch.nn.Module] 
@@ -169,6 +146,7 @@ class VAE(nn.Module):
         self.prior = prior
         self.decoder = decoder
         self.encoder = encoder
+        self.beta = beta
 
     def elbo(self, x):
         """
@@ -181,28 +159,6 @@ class VAE(nn.Module):
            Number of samples to use for the Monte Carlo estimate of the ELBO.
         """
 
-        """
-        Calcul de l'ELBO (Evidence Lower Bound) :
-        
-        1. log_prob(x) [Reconstruction] :
-           - Le décodeur définit une distribution de Bernoulli pour CHAQUE pixel (28x28).
-           - td.Independent(..., 2) regroupe ces pixels comme un seul événement.
-           - .log_prob(x) calcule la log-vraisemblance : c'est l'équivalent probabiliste 
-             de l'erreur de reconstruction (proche de la Binary Cross-Entropy).
-           - Dimension de sortie : (batch_size,) -> un score global par image.
-
-        2. kl_divergence [Régularisation] :
-           - Mesure la distance entre la distribution de l'encodeur q(z|x) et le prior p(z).
-           - td.Independent(..., 1) regroupe les dimensions de l'espace latent M.
-           - Force l'espace latent à être organisé (proche d'une Normale Standard).
-           - Dimension de sortie : (batch_size,) -> un score de complexité par image.
-
-        3. Réduction :
-           - L'ELBO est calculé par élément : (batch_size,) - (batch_size,)
-           - torch.mean(..., dim=0) réduit le tout à un scalaire (moyenne du batch)
-             pour que l'optimiseur puisse mettre à jour les poids du réseau.
-        """
-
         q = self.encoder(x)
         z = q.rsample()
 
@@ -213,20 +169,16 @@ class VAE(nn.Module):
 
         log_p_x_z = self.decoder(z).log_prob(x_reshaped)
 
-        elbo = torch.mean(log_p_x_z - (log_q - log_p_prior) , dim=0)
+        elbo = torch.mean(log_p_x_z - self.beta * (log_q - log_p_prior) , dim=0)
         return elbo
 
     def sample(self, n_samples=1):
         """
         Sample from the model by returning the mean of p(x|z).
         """
-        # 1. Échantillonner dans l'espace latent à partir du Prior Flow
+
         z = self.prior.sample(torch.Size([n_samples]))
-        
-        # 2. Obtenir la distribution de sortie du décodeur
         dist = self.decoder(z)
-        
-        # 3. Retourner la moyenne (au lieu de dist.sample())
         return dist.mean
     
     def forward(self, x):
@@ -239,6 +191,113 @@ class VAE(nn.Module):
         """
         return -self.elbo(x)
 
+class VAEEncoderNet(nn.Module):
+    """
+    A fully connected network for the VAE encoder.
+    It takes an input image (flattened) and outputs parameters for a Gaussian distribution
+    (mean and log-variance) in the latent space.
+    """
+    def __init__(self, latent_dim):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(784, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, latent_dim * 2), # Output for mean and log-variance
+        )
+
+    def forward(self, x):
+        return self.network(x)
+
+class VAEDecoderNet(nn.Module):
+    """
+    A fully connected network for the VAE decoder.
+    It takes a latent vector and outputs parameters for a Bernoulli distribution
+    (logits) in the data space.
+    """
+    def __init__(self, latent_dim):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(latent_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 784), # Output for Bernoulli logits
+            nn.Unflatten(-1, (28, 28))
+        )
+
+    def forward(self, z):
+        return self.network(z)
+
+def vae_load(checkpoint_path,hardcoded_arguments,device):
+    """
+    Load a VAE model from a checkpoint, reconstructing the architecture.
+    """
+    import argparse
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
+    
+    if isinstance(checkpoint, dict) and 'args' in checkpoint:
+        vae_args = argparse.Namespace(**checkpoint['args'])
+        vae_state_dict = checkpoint['model_state_dict']
+    else:
+        # Fallback/Hardcode logic for older or specific checkpoints as per user snippet
+        vae_args = argparse.Namespace()
+        for key, value in hardcoded_arguments.items():
+            vae_args.__setattr__(key, value)
+
+
+    M = vae_args.latent_dim
+    
+    # Reconstruct Prior
+    if vae_args.prior == 'gaussian':
+        prior = GaussianPrior(M)
+    elif vae_args.prior == 'mog':
+        prior = MoGPrior(M, getattr(vae_args, 'K', 10))
+    elif vae_args.prior == 'flow':
+        base = flow.GaussianBase(M)
+        transformations = []    
+        num_transformations = 12
+        num_hidden = 256
+        mask_type = getattr(vae_args, 'mask_type', 'checkerboard')
+
+        current_mask = None
+        if mask_type == 'checkerboard':
+            current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
+        elif mask_type == 'channelwise':
+            current_mask = torch.zeros((M,))
+            current_mask[M//2:] = 1
+
+        for i in range(num_transformations):
+            if mask_type == 'randominit':
+                current_mask = torch.randint(0, 2, (M,))
+            else:
+                if i > 0:
+                    current_mask = (1 - current_mask)
+            
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+            transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
+        prior = FlowPrior(base, transformations)
+    else:
+        raise ValueError(f"Unknown prior type: {vae_args.prior}")
+
+    # Transform keys to match current VAE model structure
+    new_vae_state_dict = {}
+    for key, value in vae_state_dict.items():
+        if key.startswith('decoder.decoder_net.') and '.network.' not in key:
+            new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
+            new_vae_state_dict[new_key] = value
+        elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
+            new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
+            new_vae_state_dict[new_key] = value
+        else:
+            new_vae_state_dict[key] = value
+
+    model = VAE(prior, BernoulliDecoder(VAEDecoderNet(M)), GaussianEncoder(VAEEncoderNet(M)), getattr(vae_args, 'beta', 1.0)).to(device)
+    model.load_state_dict(new_vae_state_dict)
+    return model
 
 def train(model, optimizer, data_loader, epochs, device):
     """
@@ -280,6 +339,7 @@ def train(model, optimizer, data_loader, epochs, device):
     return elbo_history
 
 
+
 if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import save_image, make_grid
@@ -289,16 +349,24 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
+    
+    parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
+    parser.add_argument('--saved-folder',type=str, default='output_PartA',help='folder for outputs (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model_Flow_cont.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
+    
+    parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
+    parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
-    parser.add_argument('--mask-type', type=str, default='randominit', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
     parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
+    
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--beta', type=float, default=1, metavar='V', help='beta parameter for the ELBO, must be between 0 and 1. (default: %(default)s)')
+    
 
     args = parser.parse_args()
 
@@ -315,12 +383,21 @@ if __name__ == "__main__":
     device = args.device
 
 
-    # Load MNIST as binarized at 'thresshold' and create data loaders
-    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(True),binarized=True)
+
+    # Load MNIST as binarized at 'threshold' and create data loaders
+    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=False,binarized=True)
     mnist_train_loader = data.train_loader
     mnist_test_loader = data.test_loader
     # Define prior distribution
     M = args.latent_dim
+
+    # Print the shape of a batch of data
+    x_sample = next(iter(mnist_train_loader))
+    if isinstance(x_sample, (list, tuple)):
+        x_sample = x_sample[0]
+
+    # Define prior distribution shape
+    D = x_sample.shape[1]
     
     #prior type selection
     if args.prior == 'gaussian':
@@ -362,41 +439,34 @@ if __name__ == "__main__":
         prior = FlowPrior(base,transformations)
 
     # Define encoder and decoder networks
-    encoder_net = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(784, 512),
-        nn.ReLU(),
-        nn.Linear(512, 512),
-        nn.ReLU(),
-        nn.Linear(512, M*2),
-    )
-
-    decoder_net = nn.Sequential(
-        nn.Linear(M, 512),
-        nn.ReLU(),
-        nn.Linear(512, 512),
-        nn.ReLU(),
-        nn.Linear(512, 784),        # On repasse à 784 au lieu de 784*2
-        nn.Unflatten(-1, (28, 28))  # On unflatten directement en (28, 28)
-    )
-
-    # Define VAE model
-    decoder = BernoulliDecoder(decoder_net)
-    encoder = GaussianEncoder(encoder_net)
-    model = VAE(prior, decoder, encoder).to(device)
+    encoder = GaussianEncoder(VAEEncoderNet(M))
+    decoder = BernoulliDecoder(VAEDecoderNet(M))
+    beta = args.beta
+    model = VAE(prior, decoder, encoder,beta).to(device)
 
     # Choose mode to run
     if args.mode == 'train':
         # Define optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
         # Train model
         history = train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
-        torch.save(model.state_dict(), 'output_PartA/'+args.model)
+        os.makedirs(args.saved_folder, exist_ok=True)
 
-        #Plottingt training loss
+        # Clean the model name to get just the filename (e.g., model_beta_1.pt)
+        # This prevents FileNotFoundError by removing folder paths from the string
+        model_filename = os.path.basename(args.model)
+        model_base_name = os.path.splitext(model_filename)[0]
+
+        # Determine plot filename
+        if args.plotname:
+            plot_filename = args.plotname
+        else:
+            plot_filename = f"elbo_{model_base_name}.png"
+
+        #Plotting training loss
         plt.figure(figsize=(10, 6))
         plt.plot(history, label='ELBO', color='royalblue', alpha=0.8)
         plt.xlabel('Iterations')
@@ -405,11 +475,15 @@ if __name__ == "__main__":
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.legend()
 
-        plot_filename = args.model.replace('.pt', '') + '_elbo.png'
-        plot_path = 'output_PartA/' + plot_filename
+        plot_path = os.path.join(args.saved_folder, plot_filename)
         
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         print(f"ELBO plot saved to: {plot_path}")
+        save_dict = {
+            'model_state_dict': model.state_dict(),
+            'args': vars(args) 
+        }
+        torch.save(save_dict, os.path.join(args.saved_folder, args.model))
     
     elif args.mode == 'test':
         import matplotlib.pyplot as plt
@@ -422,7 +496,13 @@ if __name__ == "__main__":
         sns.set_theme(style="whitegrid", context="talk")
         
         # 1. Load the trained model and set to evaluation mode
-        model.load_state_dict(torch.load('output_PartA/' + args.model, map_location=torch.device(args.device)))
+        loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
+        
+        if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
+        else:
+            # Assume it's the old format where the checkpoint *is* the state_dict
+            model.load_state_dict(loaded_checkpoint)
         model.eval()
         
         all_z = []
@@ -536,16 +616,18 @@ if __name__ == "__main__":
         ax.grid(True, linestyle='--', alpha=0.2)
 
         # Save and output
-        plt.savefig('output_PartA/' + args.samples, dpi=300, bbox_inches='tight')
-        print(f"Figure saved in output_PartA/{args.samples}")
+        plt.savefig(os.path.join(args.saved_folder, args.samples), dpi=300, bbox_inches='tight')
+        print(f"Figure saved in {os.path.join(args.saved_folder, args.samples)}")
         
-
-
     elif args.mode == 'sample':
-        model.load_state_dict(torch.load('output_PartA/'+args.model, map_location=torch.device(args.device)))
+        loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
+        
+        if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
+        else:
+            # Assume it's the old format where the checkpoint *is* the state_dict
+            model.load_state_dict(loaded_checkpoint)
         model.eval()
         with torch.no_grad():
-            # Génère 64 images (les moyennes de p(x|z))
             samples = model.sample(64).cpu() 
-            # On sauvegarde les moyennes directement
-            save_image(samples.view(64, 1, 28, 28), 'output_PartA/'+args.samples)
+            save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder, args.samples))
