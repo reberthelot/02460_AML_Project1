@@ -357,7 +357,15 @@ if __name__ == "__main__":
                 mask = torch.randint(0, 2, (M,))
             else :
                 mask = (1-mask) # Flip the mask
-            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
+
+            scale_net = nn.Sequential(
+                nn.Linear(M, num_hidden),
+                nn.SiLU(), 
+                nn.Linear(num_hidden, num_hidden),
+                nn.SiLU(),
+                nn.Linear(num_hidden, M),
+                nn.Tanh()
+            )
             translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
             transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, mask))
             
