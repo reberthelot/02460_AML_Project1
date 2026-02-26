@@ -300,11 +300,6 @@ if __name__ == "__main__":
     parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
 
-    
-    #python week2/02460_week2_vae.py train --model model_flow.pt --device cuda --batch-size 64 --epochs 10 --latent-dim 32
-    #python week2/02460_week2_vae.py test --model model_flow.pt --device cuda --samples latent_space_flow.png --latent-dim 32
-    #python week2/02460_week2_vae.py sample --model model_flow.pt --device cuda --samples sample_vae_flow_mnist.png --latent-dim 32
-
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -352,7 +347,15 @@ if __name__ == "__main__":
                 mask = torch.randint(0, 2, (M,))
             else :
                 mask = (1-mask) # Flip the mask
-            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
+
+            scale_net = nn.Sequential(
+                nn.Linear(M, num_hidden),
+                nn.SiLU(), 
+                nn.Linear(num_hidden, num_hidden),
+                nn.SiLU(),
+                nn.Linear(num_hidden, M),
+                nn.Tanh()
+            )
             translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
             transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, mask))
             
