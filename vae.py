@@ -4,6 +4,7 @@
 # - https://github.com/jmtomczak/intro_dgm/blob/main/vaes/vae_example.ipynb
 # - https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
 
+import MNIST
 import torch
 import torch.nn as nn
 import torch.distributions as td
@@ -14,6 +15,7 @@ import flow as flow
 import random
 import numpy as np
 import os
+import matplotlib.pyplot as plt
 
 # Different prior types - Gaussian, MoG and Flow-based
 class GaussianPrior(nn.Module):
@@ -85,6 +87,7 @@ class GaussianEncoder(nn.Module):
            feature_dim1, feature_dim2)` and output a tensor of dimension
            `(batch_size, 2M)`, where M is the dimension of the latent space.
         """
+
         super(GaussianEncoder, self).__init__()
         self.encoder_net = encoder_net
 
@@ -97,17 +100,23 @@ class GaussianEncoder(nn.Module):
            A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
         """
 
-        # C'est ici qu'on a le reparametrization trick !
-
         mean, std = torch.chunk(self.encoder_net(x), 2, dim=-1)
         return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1)
 
 
-class GaussianDecoder(nn.Module):
-    def __init__(self, decoder_net, sigma=0.1): # sigma=0.1 est une bonne valeur de départ
-        super(GaussianDecoder, self).__init__()
+class BernoulliDecoder(nn.Module):
+    def __init__(self, decoder_net):
+        """
+        Define a Bernoulli decoder distribution based on a given decoder network.
+
+        Parameters: 
+        encoder_net: [torch.nn.Module]             
+           The decoder network that takes as a tensor of dim `(batch_size, M) as
+           input, where M is the dimension of the latent space, and outputs a
+           tensor of dimension (batch_size, feature_dim1, feature_dim2).
+        """
+        super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
-        self.sigma = sigma
 
     def forward(self, z):
         """
@@ -117,8 +126,8 @@ class GaussianDecoder(nn.Module):
         z: [torch.Tensor] 
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
-        mean = self.decoder_net(z)
-        return td.Independent(td.Normal(loc=mean, scale=self.sigma), 2)
+        logits = self.decoder_net(z)
+        return td.Independent(td.Bernoulli(logits=logits), 2)
 
 class VAE(nn.Module):
     """
@@ -158,21 +167,20 @@ class VAE(nn.Module):
         log_q = q.log_prob(z)
 
         log_p_prior = self.prior.log_prob(z)
+        x_reshaped = x.view(-1, 28, 28) 
 
-        elbo = torch.mean(self.decoder(z).log_prob(x) - self.beta * (log_q - log_p_prior) , dim=0)
+        log_p_x_z = self.decoder(z).log_prob(x_reshaped)
+
+        elbo = torch.mean(log_p_x_z - self.beta * (log_q - log_p_prior) , dim=0)
         return elbo
 
     def sample(self, n_samples=1):
         """
         Sample from the model by returning the mean of p(x|z).
         """
-        # 1. Échantillonner dans l'espace latent à partir du Prior Flow
+
         z = self.prior.sample(torch.Size([n_samples]))
-        
-        # 2. Obtenir la distribution de sortie du décodeur
         dist = self.decoder(z)
-        
-        # 3. Retourner la moyenne (au lieu de dist.sample())
         return dist.mean
     
     def forward(self, x):
@@ -271,14 +279,9 @@ if __name__ == "__main__":
 
 
     # Load MNIST as binarized at 'thresshold' and create data loaders
-    thresshold = 0.5
-    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=True, download=True,
-                                                                    transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-                                                    batch_size=args.batch_size, shuffle=True)
-    mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=False, download=True,
-                                                                transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])),
-                                                    batch_size=args.batch_size, shuffle=True)
-
+    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(True),binarized=True)
+    mnist_train_loader = data.train_loader
+    mnist_test_loader = data.test_loader
     # Define prior distribution
     M = args.latent_dim
     
@@ -333,7 +336,7 @@ if __name__ == "__main__":
     )
 
     # Define VAE model
-    decoder = GaussianDecoder(decoder_net)
+    decoder = BernoulliDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
     beta = args.beta
     model = VAE(prior, decoder, encoder,beta).to(device)
@@ -357,7 +360,7 @@ if __name__ == "__main__":
             model_base_name = os.path.splitext(args.model)[0]
             plot_filename = f"elbo_{model_base_name}.png"
 
-        #Plottingt training loss
+        #Plotting training loss
         plt.figure(figsize=(10, 6))
         plt.plot(history, label='ELBO', color='royalblue', alpha=0.8)
         plt.xlabel('Iterations')
@@ -377,6 +380,7 @@ if __name__ == "__main__":
         import seaborn as sns
         from sklearn.decomposition import PCA
         import numpy as np
+        from matplotlib.lines import Line2D
 
         # Set visual style for publication-quality plots
         sns.set_theme(style="whitegrid", context="talk")
@@ -459,6 +463,14 @@ if __name__ == "__main__":
             zorder=2
         )
 
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Aggregate Posterior (q(z|x))',
+                   markerfacecolor='gray', markersize=10),
+            Line2D([0], [0], color='black', lw=2.5, label='Prior (p(z))')
+        ]
+        
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=12, frameon=True, shadow=True)
+
         # 7. Intelligent Axis Scaling
         # Use percentiles to avoid outliers (common in Flow priors) squashing the main plot
         all_data_viz = np.vstack([z_viz, z_prior_viz])
@@ -491,13 +503,9 @@ if __name__ == "__main__":
         plt.savefig(os.path.join(args.saved_folder, args.samples), dpi=300, bbox_inches='tight')
         print(f"Figure saved in {os.path.join(args.saved_folder, args.samples)}")
         
-
-
     elif args.mode == 'sample':
         model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
         model.eval()
         with torch.no_grad():
-            # Génère 64 images (les moyennes de p(x|z))
             samples = model.sample(64).cpu() 
-            # On sauvegarde les moyennes directement
             save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder, args.samples))
