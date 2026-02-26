@@ -1,12 +1,10 @@
 # Models
 *pt
-<<<<<<< HEAD
 *sh
 
 # Output folder
 output_PartA/
-=======
->>>>>>> f6a732dcce0f9bf57e8842cc953090bfce3199b9
+output_PartB/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
