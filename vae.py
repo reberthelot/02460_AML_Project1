@@ -11,6 +11,8 @@ import torch.utils.data
 from torch.nn import functional as F
 from tqdm import tqdm
 import flow as flow
+import random
+import numpy as np
 
 # Different prior types - Gaussian, MoG and Flow-based
 class GaussianPrior(nn.Module):
@@ -285,17 +287,27 @@ if __name__ == "__main__":
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
     parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
 
+    
     #python week2/02460_week2_vae.py train --model model_flow.pt --device cuda --batch-size 64 --epochs 10 --latent-dim 32
     #python week2/02460_week2_vae.py test --model model_flow.pt --device cuda --samples latent_space_flow.png --latent-dim 32
     #python week2/02460_week2_vae.py sample --model model_flow.pt --device cuda --samples sample_vae_flow_mnist.png --latent-dim 32
 
     args = parser.parse_args()
+
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    
     print('# Options')
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
 
     device = args.device
+
 
     # Load MNIST as binarized at 'thresshold' and create data loaders
     thresshold = 0.5
@@ -475,7 +487,7 @@ if __name__ == "__main__":
         cbar = fig.colorbar(scatter, ax=ax, ticks=range(10))
         # Force colorbar opacity to 1.0 to make colors more vibrant than the points
         cbar.set_alpha(1.0)
-        cbar.draw_all() 
+        cbar._draw_all() 
         
         cbar.set_label('MNIST Digit Class', fontweight='bold', labelpad=15)
         cbar.ax.set_yticklabels([f'Digit {i}' for i in range(10)])
@@ -494,9 +506,6 @@ if __name__ == "__main__":
         plt.savefig('output_PartA/' + args.samples, dpi=300, bbox_inches='tight')
         print(f"Figure saved in output_PartA/{args.samples}")
         
-
-
-
 
 
     elif args.mode == 'sample':
