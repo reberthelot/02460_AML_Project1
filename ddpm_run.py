@@ -21,7 +21,7 @@ if __name__ == "__main__":
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample','test'], help='what to do when running the script (default: %(default)s)')
     
     parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
     parser.add_argument('--saved-folder',type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')

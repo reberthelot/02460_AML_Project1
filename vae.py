@@ -13,6 +13,7 @@ from tqdm import tqdm
 import flow as flow
 import random
 import numpy as np
+import os
 
 # Different prior types - Gaussian, MoG and Flow-based
 class GaussianPrior(nn.Module):
@@ -30,7 +31,6 @@ class GaussianPrior(nn.Module):
         self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
 
     def log_prob(self, z):
-        # On calcule directement sans passer par un forward interne
         return td.Independent(td.Normal(self.mean, self.std), 1).log_prob(z)
 
     def sample(self, shape):
@@ -74,7 +74,6 @@ class FlowPrior(flow.Flow):
         super(FlowPrior, self).__init__(base, transformation)
     
 
-
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
         """
@@ -97,25 +96,6 @@ class GaussianEncoder(nn.Module):
         x: [torch.Tensor] 
            A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
         """
-        """
-        1. Sortie du réseau (encoder_net) :
-           Le réseau produit un vecteur de taille 2*M (ex: 64 si M=32).
-           M est la dimension de l'espace latent (le nombre de "curseurs" qui 
-           décrivent l'image).
-
-        2. torch.chunk(..., 2, dim=-1) :
-           On coupe ce vecteur en deux parties égales de taille M :
-           - mean (mu) : Les M premières valeurs (position dans l'espace latent).
-           - std (log_sigma) : Les M dernières valeurs (incertitude sur chaque dimension).
-
-        3. Paramétrisation de la distribution :
-           - loc=mean : La moyenne de la gaussienne pour chaque dimension latente.
-           - scale=torch.exp(std) : On passe à l'exponentielle pour garantir que
-             l'écart-type soit toujours POSITIF (le réseau prédit en fait un log-sigma).
-           
-        4. td.Independent(..., 1) :
-           On traite ces M dimensions comme un seul vecteur aléatoire multidimensionnel.
-        """
 
         # C'est ici qu'on a le reparametrization trick !
 
@@ -137,20 +117,14 @@ class GaussianDecoder(nn.Module):
         z: [torch.Tensor] 
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
-        # On récupère les paramètres du réseau
-        # out aura une forme (batch_size, 2, 28, 28)
-        # Le réseau ne sort plus que la moyenne (batch_size, 28, 28)
         mean = self.decoder_net(z)
-        
-        # On définit un écart-type fixe (scalaire ou tenseur de même taille)
-        # La valeur 0.1 est appliquée à chaque pixel
         return td.Independent(td.Normal(loc=mean, scale=self.sigma), 2)
 
 class VAE(nn.Module):
     """
     Define a Variational Autoencoder (VAE) model.
     """
-    def __init__(self, prior, decoder, encoder):
+    def __init__(self, prior, decoder, encoder,beta):
         """
         Parameters:
         prior: [torch.nn.Module] 
@@ -165,6 +139,7 @@ class VAE(nn.Module):
         self.prior = prior
         self.decoder = decoder
         self.encoder = encoder
+        self.beta = beta
 
     def elbo(self, x):
         """
@@ -177,28 +152,6 @@ class VAE(nn.Module):
            Number of samples to use for the Monte Carlo estimate of the ELBO.
         """
 
-        """
-        Calcul de l'ELBO (Evidence Lower Bound) :
-        
-        1. log_prob(x) [Reconstruction] :
-           - Le décodeur définit une distribution de Bernoulli pour CHAQUE pixel (28x28).
-           - td.Independent(..., 2) regroupe ces pixels comme un seul événement.
-           - .log_prob(x) calcule la log-vraisemblance : c'est l'équivalent probabiliste 
-             de l'erreur de reconstruction (proche de la Binary Cross-Entropy).
-           - Dimension de sortie : (batch_size,) -> un score global par image.
-
-        2. kl_divergence [Régularisation] :
-           - Mesure la distance entre la distribution de l'encodeur q(z|x) et le prior p(z).
-           - td.Independent(..., 1) regroupe les dimensions de l'espace latent M.
-           - Force l'espace latent à être organisé (proche d'une Normale Standard).
-           - Dimension de sortie : (batch_size,) -> un score de complexité par image.
-
-        3. Réduction :
-           - L'ELBO est calculé par élément : (batch_size,) - (batch_size,)
-           - torch.mean(..., dim=0) réduit le tout à un scalaire (moyenne du batch)
-             pour que l'optimiseur puisse mettre à jour les poids du réseau.
-        """
-
         q = self.encoder(x)
         z = q.rsample()
 
@@ -206,7 +159,7 @@ class VAE(nn.Module):
 
         log_p_prior = self.prior.log_prob(z)
 
-        elbo = torch.mean(self.decoder(z).log_prob(x) - (log_q - log_p_prior) , dim=0)
+        elbo = torch.mean(self.decoder(z).log_prob(x) - self.beta * (log_q - log_p_prior) , dim=0)
         return elbo
 
     def sample(self, n_samples=1):
@@ -283,21 +236,24 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
+    
+    parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
+    parser.add_argument('--saved-folder',type=str, default='output_PartA',help='folder for outputs (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model_Flow_cont.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
+    
+    parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
+    parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
+    parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
+    
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
-    parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
-    parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
-    parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
-    parser.add_argument('--seed', type=int, default=42, help='random seed')
-
+    parser.add_argument('--beta', type=float, default=1, metavar='V', help='beta parameter for the ELBO, must be between 0 and 1. (default: %(default)s)')
     
-    #python week2/02460_week2_vae.py train --model model_flow.pt --device cuda --batch-size 64 --epochs 10 --latent-dim 32
-    #python week2/02460_week2_vae.py test --model model_flow.pt --device cuda --samples latent_space_flow.png --latent-dim 32
-    #python week2/02460_week2_vae.py sample --model model_flow.pt --device cuda --samples sample_vae_flow_mnist.png --latent-dim 32
 
     args = parser.parse_args()
 
@@ -372,25 +328,34 @@ if __name__ == "__main__":
         nn.ReLU(),
         nn.Linear(512, 512),
         nn.ReLU(),
-        nn.Linear(512, 784),        # On repasse à 784 au lieu de 784*2
-        nn.Unflatten(-1, (28, 28))  # On unflatten directement en (28, 28)
+        nn.Linear(512, 784),
+        nn.Unflatten(-1, (28, 28))
     )
 
     # Define VAE model
     decoder = GaussianDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
-    model = VAE(prior, decoder, encoder).to(device)
+    beta = args.beta
+    model = VAE(prior, decoder, encoder,beta).to(device)
 
     # Choose mode to run
     if args.mode == 'train':
         # Define optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
         # Train model
         history = train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
-        torch.save(model.state_dict(), 'output_PartA/'+args.model)
+        # Ensure output_PartA directory exists for plots
+        os.makedirs(args.saved_folder, exist_ok=True)
+
+        # Determine plot filename
+        if args.plotname:
+            plot_filename = args.plotname
+        else: # Derive from model name, e.g., model_ddpm_mnist.pt -> loss_model_ddpm_mnist.png
+            model_base_name = os.path.splitext(args.model)[0]
+            plot_filename = f"elbo_{model_base_name}.png"
 
         #Plottingt training loss
         plt.figure(figsize=(10, 6))
@@ -401,11 +366,11 @@ if __name__ == "__main__":
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.legend()
 
-        plot_filename = args.model.replace('.pt', '') + '_elbo.png'
-        plot_path = 'output_PartA/' + plot_filename
+        plot_path = os.path.join(args.saved_folder, plot_filename)
         
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         print(f"ELBO plot saved to: {plot_path}")
+        torch.save(model.state_dict(), os.path.join(args.saved_folder, args.model))
     
     elif args.mode == 'test':
         import matplotlib.pyplot as plt
@@ -417,7 +382,7 @@ if __name__ == "__main__":
         sns.set_theme(style="whitegrid", context="talk")
         
         # 1. Load the trained model and set to evaluation mode
-        model.load_state_dict(torch.load('output_PartA/' + args.model, map_location=torch.device(args.device)))
+        model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
         model.eval()
         
         all_z = []
@@ -523,16 +488,16 @@ if __name__ == "__main__":
         ax.grid(True, linestyle='--', alpha=0.2)
 
         # Save and output
-        plt.savefig('output_PartA/' + args.samples, dpi=300, bbox_inches='tight')
-        print(f"Figure saved in output_PartA/{args.samples}")
+        plt.savefig(os.path.join(args.saved_folder, args.samples), dpi=300, bbox_inches='tight')
+        print(f"Figure saved in {os.path.join(args.saved_folder, args.samples)}")
         
 
 
     elif args.mode == 'sample':
-        model.load_state_dict(torch.load('output_PartA/'+args.model, map_location=torch.device(args.device)))
+        model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
         model.eval()
         with torch.no_grad():
             # Génère 64 images (les moyennes de p(x|z))
             samples = model.sample(64).cpu() 
             # On sauvegarde les moyennes directement
-            save_image(samples.view(64, 1, 28, 28), 'output_PartA/'+args.samples)
+            save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder, args.samples))
