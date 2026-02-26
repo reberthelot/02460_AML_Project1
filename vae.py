@@ -254,6 +254,8 @@ def train(model, optimizer, data_loader, epochs, device):
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
 
+    elbo_history = []
+
     for epoch in range(epochs):
         data_iter = iter(data_loader)
         for x in data_iter:
@@ -263,9 +265,12 @@ def train(model, optimizer, data_loader, epochs, device):
             loss.backward()
             optimizer.step()
 
+            elbo_history.append(-loss.item())
+
             # Update progress bar
             progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
+    return elbo_history
 
 
 
@@ -282,7 +287,7 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='model_Flow_cont.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
@@ -382,10 +387,25 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Train model
-        train(model, optimizer, mnist_train_loader, args.epochs, args.device)
+        history = train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
         torch.save(model.state_dict(), 'output_PartA/'+args.model)
+
+        #Plottingt training loss
+        plt.figure(figsize=(10, 6))
+        plt.plot(history, label='ELBO', color='royalblue', alpha=0.8)
+        plt.xlabel('Iterations')
+        plt.ylabel('ELBO')
+        plt.title(f'ELBO Evolution - Prior: {args.prior.upper()}')
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend()
+
+        plot_filename = args.model.replace('.pt', '') + '_elbo.png'
+        plot_path = 'output_PartA/' + plot_filename
+        
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"ELBO plot saved to: {plot_path}")
     
     elif args.mode == 'test':
         import matplotlib.pyplot as plt

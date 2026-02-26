@@ -1,5 +1,9 @@
 # Models
 *pt
+*sh
+
+# Output folder
+output_PartA/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
