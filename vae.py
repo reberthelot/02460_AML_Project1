@@ -453,14 +453,17 @@ if __name__ == "__main__":
         history = train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
-        # Ensure output_PartA directory exists for plots
         os.makedirs(args.saved_folder, exist_ok=True)
+
+        # Clean the model name to get just the filename (e.g., model_beta_1.pt)
+        # This prevents FileNotFoundError by removing folder paths from the string
+        model_filename = os.path.basename(args.model)
+        model_base_name = os.path.splitext(model_filename)[0]
 
         # Determine plot filename
         if args.plotname:
             plot_filename = args.plotname
-        else: # Derive from model name, e.g., model_ddpm_mnist.pt -> loss_model_ddpm_mnist.png
-            model_base_name = os.path.splitext(args.model)[0]
+        else:
             plot_filename = f"elbo_{model_base_name}.png"
 
         #Plotting training loss
