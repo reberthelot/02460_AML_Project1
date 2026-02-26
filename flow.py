@@ -10,22 +10,6 @@ import torch.distributions as td
 from tqdm import tqdm
 import importlib
 
-'''
-PRINCIPE D'ENTRAÎNEMENT (MLE) :
-        
-        1. On part des données complexes 'x' (les deux gaussiennes du dataset).
-        2. On applique l'INVERSE du flow pour 'déplier' ces données :
-           x -> z = T_inverse(x).
-           Le but est que le résultat 'z' ressemble le plus possible à une 
-           distribution Normale Standard (notre 'base').
-        
-        3. On calcule la probabilité du point 'z' obtenu sous cette loi Normale.
-           Plus 'z' tombe au centre de la Normale (proche de 0), plus le modèle
-           considère qu'il a réussi sa transformation.
-        
-        4. On ajoute le Log-Determinant du Jacobien pour compenser le changement
-           de volume induit par la déformation de l'espace.
-'''
 
 class GaussianBase(nn.Module):
     def __init__(self, D):
