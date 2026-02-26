@@ -426,7 +426,10 @@ if __name__ == "__main__":
         sns.set_theme(style="whitegrid", context="talk")
         
         # 1. Load the trained model and set to evaluation mode
-        model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
+        vae_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
+        vae_state_dict = vae_checkpoint['model_state_dict']
+        model.load_state_dict(vae_state_dict)
+        # model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
         model.eval()
         
         all_z = []
@@ -544,7 +547,10 @@ if __name__ == "__main__":
         print(f"Figure saved in {os.path.join(args.saved_folder, args.samples)}")
         
     elif args.mode == 'sample':
-        model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
+        vae_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
+        vae_state_dict = vae_checkpoint['model_state_dict']
+        model.load_state_dict(vae_state_dict)
+        # model.load_state_dict(torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device)))
         model.eval()
         with torch.no_grad():
             samples = model.sample(64).cpu() 

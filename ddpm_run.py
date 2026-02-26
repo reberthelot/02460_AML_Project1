@@ -18,6 +18,9 @@ if __name__ == "__main__":
     # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
     
 
+    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 50 --batch-size 64 --network unet --lr 1e-3
+
+
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
@@ -65,6 +68,7 @@ if __name__ == "__main__":
         # Temporary hardcode
         vae_args.latent_dim = 32
         vae_args.prior = 'mog'
+        vae_args.beta = 1
         # Temporary hardcode
 
         M = vae_args.latent_dim
