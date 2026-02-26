@@ -231,6 +231,73 @@ class VAEDecoderNet(nn.Module):
     def forward(self, z):
         return self.network(z)
 
+def vae_load(checkpoint_path,hardcoded_arguments,device):
+    """
+    Load a VAE model from a checkpoint, reconstructing the architecture.
+    """
+    import argparse
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
+    
+    if isinstance(checkpoint, dict) and 'args' in checkpoint:
+        vae_args = argparse.Namespace(**checkpoint['args'])
+        vae_state_dict = checkpoint['model_state_dict']
+    else:
+        # Fallback/Hardcode logic for older or specific checkpoints as per user snippet
+        vae_args = argparse.Namespace()
+        for key, value in hardcoded_arguments.items():
+            vae_args.__setattr__(key, value)
+
+
+    M = vae_args.latent_dim
+    
+    # Reconstruct Prior
+    if vae_args.prior == 'gaussian':
+        prior = GaussianPrior(M)
+    elif vae_args.prior == 'mog':
+        prior = MoGPrior(M, getattr(vae_args, 'K', 10))
+    elif vae_args.prior == 'flow':
+        base = flow.GaussianBase(M)
+        transformations = []    
+        num_transformations = 12
+        num_hidden = 256
+        mask_type = getattr(vae_args, 'mask_type', 'checkerboard')
+
+        current_mask = None
+        if mask_type == 'checkerboard':
+            current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
+        elif mask_type == 'channelwise':
+            current_mask = torch.zeros((M,))
+            current_mask[M//2:] = 1
+
+        for i in range(num_transformations):
+            if mask_type == 'randominit':
+                current_mask = torch.randint(0, 2, (M,))
+            else:
+                if i > 0:
+                    current_mask = (1 - current_mask)
+            
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+            transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
+        prior = FlowPrior(base, transformations)
+    else:
+        raise ValueError(f"Unknown prior type: {vae_args.prior}")
+
+    # Transform keys to match current VAE model structure
+    new_vae_state_dict = {}
+    for key, value in vae_state_dict.items():
+        if key.startswith('decoder.decoder_net.') and '.network.' not in key:
+            new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
+            new_vae_state_dict[new_key] = value
+        elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
+            new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
+            new_vae_state_dict[new_key] = value
+        else:
+            new_vae_state_dict[key] = value
+
+    model = VAE(prior, BernoulliDecoder(VAEDecoderNet(M)), GaussianEncoder(VAEEncoderNet(M)), getattr(vae_args, 'beta', 1.0)).to(device)
+    model.load_state_dict(new_vae_state_dict)
+    return model
 
 def train(model, optimizer, data_loader, epochs, device):
     """
@@ -429,7 +496,7 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model.load_state_dict(loaded_checkpoint['model_state_dict'])
+            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)
@@ -553,7 +620,7 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model.load_state_dict(loaded_checkpoint['model_state_dict'])
+            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)

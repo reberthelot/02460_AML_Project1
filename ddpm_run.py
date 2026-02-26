@@ -19,6 +19,7 @@ if __name__ == "__main__":
     
 
     # python ddpm_run.py train --model model_ddpm_mnist_mog.pt --beta-vae model_mog_run_2.pt --device cuda --epochs 50 --batch-size 64 --lr 1e-3
+    # python ddpm_run.py sample --model model_ddpm_mnist_mog.pt --beta-vae model_mog_run_2.pt --device cuda --samples sample_ddpm_mnist_mog.png
 
 
     # Parse arguments
@@ -57,80 +58,17 @@ if __name__ == "__main__":
     
     # We must update train_loader and test_loader
     if args.beta_vae :
-        from vae import GaussianEncoder, VAEEncoderNet, BernoulliDecoder, VAEDecoderNet, VAE, GaussianPrior, MoGPrior, FlowPrior
-        import flow # Nécessaire pour FlowPrior et ses composants
-        
-        # Load the model
-        # vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
-        # vae_state_dict = vae_checkpoint['model_state_dict']
-        # vae_args = argparse.Namespace(**vae_checkpoint['args']) 
+        from vae import vae_load
 
+        temporary_hardcoded = {
+            'K': 32,
+            'latent_dim': 32,
+            'prior': 'mog',
+            'beta': 1
+            }
         # Temporary hardcode
-        vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
-        vae_state_dict = vae_checkpoint
-        vae_args = argparse.Namespace(**{})#**vae_checkpoint['args'])
-        vae_args.K = 32
-        vae_args.latent_dim = 32
-        vae_args.prior = 'mog'
-        vae_args.beta = 1
-        # Temporary hardcode
+        vae_model = vae_load(checkpoint_path=args.beta_vae, hardcoded_arguments=temporary_hardcoded,device=args.device)
 
-        M = vae_args.latent_dim
-        # Reconstruct Prior
-        vae_prior = None
-        if vae_args.prior == 'gaussian':
-            vae_prior = GaussianPrior(M)
-        elif vae_args.prior == 'mog':
-            vae_prior = MoGPrior(M, vae_args.K)
-        elif vae_args.prior == 'flow':
-            base = flow.GaussianBase(M)
-            transformations = []    
-            num_transformations = 12
-            num_hidden = 256
-
-            current_mask = None
-            if vae_args.mask_type == 'checkerboard':
-                current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
-            elif vae_args.mask_type == 'channelwise':
-                current_mask = torch.zeros((M,))
-                current_mask[M//2:] = 1
-
-            for i in range(num_transformations):
-                if vae_args.mask_type == 'randominit':
-                    current_mask = torch.randint(0, 2, (M,))
-                else:
-                    # Pour checkerboard/channelwise, le masque alterne à chaque couche
-                    if i > 0: # Après la première couche, inverser le masque
-                        current_mask = (1 - current_mask)
-                
-                scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
-                translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
-                transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
-            vae_prior = FlowPrior(base,transformations)
-        else:
-            raise ValueError(f"Type de prior inconnu: {vae_args.prior}")
-        
-        # Transform keys in vae_state_dict to match the current VAE model structure
-        new_vae_state_dict = {}
-        for key, value in vae_state_dict.items():
-            if key.startswith('decoder.decoder_net.') and '.network.' not in key:
-                new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
-                new_vae_state_dict[new_key] = value
-            elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
-                new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
-                new_vae_state_dict[new_key] = value
-            else:
-                new_vae_state_dict[key] = value
-        vae_state_dict = new_vae_state_dict # Update to the transformed state_dict
-
-        # Reconstruct temporary encoder and decoder
-        temp_encoder = GaussianEncoder(VAEEncoderNet(M))
-        temp_decoder = BernoulliDecoder(VAEDecoderNet(M))
-        
-        # Reconstruct the model
-        vae_model = VAE(vae_prior, temp_decoder, temp_encoder, vae_args.beta).to(args.device)
-        vae_model.load_state_dict(vae_state_dict)
-        
         # Retrieve encoder and decoder
         encoder = vae_model.encoder
         decoder = vae_model.decoder
@@ -259,7 +197,7 @@ if __name__ == "__main__":
         model.eval()
         with torch.no_grad():
             if args.beta_vae :
-                samples = decoder(model.sample((64,D))).cpu()
+                samples = decoder(model.sample((64,D))).mean.cpu()
             else :
                 samples = model.sample((64,D)).cpu()
             if not(args.binarized): # Diffusion
