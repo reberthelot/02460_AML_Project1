@@ -14,7 +14,7 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 10 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 50 --batch-size 64 --network unet --lr 1e-3
     # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
     
 
@@ -22,7 +22,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample','test'], help='what to do when running the script (default: %(default)s)')
-    
+    parser.add_argument('--beta-vae', type=str, default=None, help='Full path to the beta vae. If not none, it will train based on a beta-vae(default: %(default)s)')
+    parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
+
+    # The beta VAE different to none will over-ride the network argument to fully.
+
+    parser.add_argument('--network', type=str, default='fully', choices=['unet', 'fully'], help='Choose the network type (default: %(default)s)')
+    parser.add_argument('--T', type=float, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
+
     parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
     parser.add_argument('--saved-folder',type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
 
@@ -31,8 +38,6 @@ if __name__ == "__main__":
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     
-    parser.add_argument('--network', type=str, default='fully', choices=['unet', 'fully'], help='Choose the network type (default: %(default)s)')
-    parser.add_argument('--T', type=float, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
 
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
     parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau', choices=['ReduceLROnPlateau', 'ExponentialLR','CosineAnnealingLR','None'], help='Scheduler to Use (default: %(default)s)')
@@ -45,15 +50,95 @@ if __name__ == "__main__":
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
 
-    # Generate the data
-    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(args.binarized),binarized=args.binarized)
-    train_loader = data.train_loader
-    test_loader = data.test_loader
+    
+    
+    # We must update train_loader and test_loader
+    if args.beta_vae :
+        from vae import GaussianEncoder, VAEEncoderNet, BernoulliDecoder, VAEDecoderNet, VAE, GaussianPrior, MoGPrior, FlowPrior
+        import flow # Nécessaire pour FlowPrior et ses composants
         
+        # Load the model
+        vae_checkpoint = torch.load(args.beta_vae, map_location=torch.device(args.device))
+        vae_state_dict = vae_checkpoint['model_state_dict']
+        vae_args = argparse.Namespace(**vae_checkpoint['args']) 
+
+        # Temporary hardcode
+        vae_args.latent_dim = 32
+        vae_args.prior = 'mog'
+        # Temporary hardcode
+
+        M = vae_args.latent_dim
+        # Reconstruct Prior
+        vae_prior = None
+        if vae_args.prior == 'gaussian':
+            vae_prior = GaussianPrior(M)
+        elif vae_args.prior == 'mog':
+            vae_prior = MoGPrior(M, vae_args.K)
+        elif vae_args.prior == 'flow':
+            base = flow.GaussianBase(M)
+            transformations = []    
+            num_transformations = 12
+            num_hidden = 256
+
+            current_mask = None
+            if vae_args.mask_type == 'checkerboard':
+                current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
+            elif vae_args.mask_type == 'channelwise':
+                current_mask = torch.zeros((M,))
+                current_mask[M//2:] = 1
+
+            for i in range(num_transformations):
+                if vae_args.mask_type == 'randominit':
+                    current_mask = torch.randint(0, 2, (M,))
+                else:
+                    # Pour checkerboard/channelwise, le masque alterne à chaque couche
+                    if i > 0: # Après la première couche, inverser le masque
+                        current_mask = (1 - current_mask)
+                
+                scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M),nn.Tanh())
+                translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+                transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
+            vae_prior = FlowPrior(base,transformations)
+        else:
+            raise ValueError(f"Type de prior inconnu: {vae_args.prior}")
+
+        # Reconstruct temporary encoder and decoder
+        temp_encoder = GaussianEncoder(VAEEncoderNet(M))
+        temp_decoder = BernoulliDecoder(VAEDecoderNet(M))
+        
+        # Reconstruct the model
+        vae_model = VAE(vae_prior, temp_decoder, temp_encoder, vae_args.beta).to(args.device)
+        vae_model.load_state_dict(vae_state_dict)
+        
+        # Retrieve encoder and decoder
+        encoder = vae_model.encoder
+        decoder = vae_model.decoder
+        args.network = 'fully'
+        args.binarized = True
+        
+        # Generate the data
+        data = MNIST.LatentMNIST(encoder=encoder,batch_size=args.batch_size,diffusion=False,binarized=True,device=args.device)
+        train_loader = data.train_loader
+        test_loader = data.test_loader
+
+    else :
+        # Generate the data
+        data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(args.binarized),binarized=args.binarized)
+        train_loader = data.train_loader
+        test_loader = data.test_loader
+
+
+
     # Print the shape of a batch of data
     x_sample = next(iter(train_loader))
     if isinstance(x_sample, (list, tuple)):
         x_sample = x_sample[0]
+
+    # Define prior distribution shape
+    D = x_sample.shape[1]
+    
+    # Set the number of steps in the diffusion process
+    T = args.T
 
     print("\n--- DataLoader Information ---")
     print("Train Loader:")
@@ -73,11 +158,7 @@ if __name__ == "__main__":
         print("  Total elements: N/A (dataset does not have a length)")
     print("----------------------------\n")
 
-    # Define prior distribution shape
-    D = x_sample.shape[1]
-
-    # Set the number of steps in the diffusion process
-    T = args.T
+    
 
 
     # Choose mode to run
@@ -140,7 +221,7 @@ if __name__ == "__main__":
         import numpy as np
 
         # Load the model
-        checkpoint = torch.load(args.model, map_location=torch.device(args.device))
+        checkpoint = torch.load(os.path.join(args.saved_folder,args.model), map_location=torch.device(args.device))
         print(f'Selected model type: {checkpoint["network"]}')
         if checkpoint['network'] == 'fully':
             loaded_num_hidden = checkpoint['num_hidden']
@@ -156,7 +237,10 @@ if __name__ == "__main__":
 
         model.eval()
         with torch.no_grad():
-            samples = model.sample((64,D)).cpu()
+            if args.beta_vae :
+                samples = decoder(model.sample((64,D))).cpu()
+            else :
+                samples = model.sample((64,D)).cpu()
             if not(args.binarized): # Diffusion
                 samples = samples / 2 + 0.5 # Reverse transformation
             save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder,args.samples))

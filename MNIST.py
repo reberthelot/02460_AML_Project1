@@ -2,6 +2,8 @@
 # Modified to contain the MNIST class
 
 import torch
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, TensorDataset
 
 class MNIST:
     def __init__(self, batch_size=64, diffusion=False, binarized=False):
@@ -22,7 +24,6 @@ class MNIST:
           4. both flags: binary {0,1} but centred around zero before thresholding.
         """
         self.batch_size = batch_size
-        from torchvision import datasets, transforms
 
         # build transform step by step depending on the flags
         steps = [transforms.ToTensor(),
@@ -42,17 +43,69 @@ class MNIST:
         steps.append(transforms.Lambda(lambda x: x.flatten()))
 
         transform = transforms.Compose(steps)
-        self.train_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=True, download=True, transform=transform), batch_size=self.batch_size, shuffle=True)
-        self.test_loader = torch.utils.data.DataLoader(datasets.MNIST('../data/', train=False, download=True, transform=transform), batch_size=self.batch_size, shuffle=True)
+        self.train_loader = DataLoader(datasets.MNIST('../data/', train=True, download=True, transform=transform), batch_size=self.batch_size, shuffle=True)
+        self.test_loader = DataLoader(datasets.MNIST('../data/', train=False, download=True, transform=transform), batch_size=self.batch_size, shuffle=True)
         self.xlim = (0,1)
         self.ylim = (0,1)
 
-    # def __call__(self):
-    #     """
-    #     Return the distribution.
-    #     Returns:
-    #     distribution: [torch.distributions.Distribution]
-    #     """
-    #     return self.distribution
 
 
+class LatentMNIST:
+    def __init__(self, encoder=None, batch_size=64, diffusion=False, binarized=False, device='cpu'):
+        """
+        Modified MNIST class that can project data into a latent space.
+        If 'encoder' is provided, the loaders will yield latent vectors (z).
+        """
+        self.batch_size = batch_size
+        self.device = device
+        
+        # 1. Build the standard pixel-level transforms
+        steps = [transforms.ToTensor(),
+                 transforms.Lambda(lambda x: x + torch.rand(x.shape) / 255)]
+
+        if diffusion:
+            steps.append(transforms.Lambda(lambda x: (x - 0.5) * 2.0))
+
+        if binarized:
+            steps.append(transforms.Lambda(lambda x: (x > (0.0 if diffusion else 0.5)).float()))
+
+        steps.append(transforms.Lambda(lambda x: x.flatten()))
+        transform = transforms.Compose(steps)
+
+        # 2. Initialize standard datasets
+        train_ds = datasets.MNIST('../data/', train=True, download=True, transform=transform)
+        test_ds = datasets.MNIST('../data/', train=False, download=True, transform=transform)
+
+        # 3. If an encoder is provided, transform the entire dataset into Latent Space
+        if encoder is not None:
+            self.train_loader = self._convert_to_latent(train_ds, encoder)
+            self.test_loader = self._convert_to_latent(test_ds, encoder)
+        else:
+            self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+            self.test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=True)
+
+    def _convert_to_latent(self, dataset, encoder):
+        """Helper to pass the dataset through the VAE encoder once."""
+        encoder.to(self.device)
+        encoder.eval()
+        
+        all_z = []
+        all_y = []
+        
+        # Use a temporary loader to process the raw images
+        temp_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+        
+        with torch.no_grad():
+            for x, y in temp_loader:
+                x = x.to(self.device)
+                # Assuming VAE returns (z, mu, logvar) or just z
+                # We typically use 'mu' or a sample 'z' for the latent representation
+                res = encoder(x)
+                z = res[0] if isinstance(res, (tuple, list)) else res
+                
+                all_z.append(z.cpu())
+                all_y.append(y)
+        
+        # Create a new TensorDataset so fetching is lightning fast
+        latent_ds = TensorDataset(torch.cat(all_z), torch.cat(all_y))
+        return DataLoader(latent_ds, batch_size=self.batch_size, shuffle=True)

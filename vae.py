@@ -75,7 +75,6 @@ class FlowPrior(flow.Flow):
         """
         super(FlowPrior, self).__init__(base, transformation)
     
-
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
         """
@@ -102,7 +101,6 @@ class GaussianEncoder(nn.Module):
 
         mean, std = torch.chunk(self.encoder_net(x), 2, dim=-1)
         return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1)
-
 
 class BernoulliDecoder(nn.Module):
     def __init__(self, decoder_net):
@@ -193,6 +191,46 @@ class VAE(nn.Module):
         """
         return -self.elbo(x)
 
+class VAEEncoderNet(nn.Module):
+    """
+    A fully connected network for the VAE encoder.
+    It takes an input image (flattened) and outputs parameters for a Gaussian distribution
+    (mean and log-variance) in the latent space.
+    """
+    def __init__(self, latent_dim):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(784, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, latent_dim * 2), # Output for mean and log-variance
+        )
+
+    def forward(self, x):
+        return self.network(x)
+
+class VAEDecoderNet(nn.Module):
+    """
+    A fully connected network for the VAE decoder.
+    It takes a latent vector and outputs parameters for a Bernoulli distribution
+    (logits) in the data space.
+    """
+    def __init__(self, latent_dim):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(latent_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 784), # Output for Bernoulli logits
+            nn.Unflatten(-1, (28, 28))
+        )
+
+    def forward(self, z):
+        return self.network(z)
+
 
 def train(model, optimizer, data_loader, epochs, device):
     """
@@ -278,12 +316,21 @@ if __name__ == "__main__":
     device = args.device
 
 
-    # Load MNIST as binarized at 'thresshold' and create data loaders
-    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(True),binarized=True)
+
+    # Load MNIST as binarized at 'threshold' and create data loaders
+    data = MNIST.MNIST(batch_size=args.batch_size,diffusion=False,binarized=True)
     mnist_train_loader = data.train_loader
     mnist_test_loader = data.test_loader
     # Define prior distribution
     M = args.latent_dim
+
+    # Print the shape of a batch of data
+    x_sample = next(iter(mnist_train_loader))
+    if isinstance(x_sample, (list, tuple)):
+        x_sample = x_sample[0]
+
+    # Define prior distribution shape
+    D = x_sample.shape[1]
     
     #prior type selection
     if args.prior == 'gaussian':
@@ -317,27 +364,8 @@ if __name__ == "__main__":
         prior = FlowPrior(base,transformations)
 
     # Define encoder and decoder networks
-    encoder_net = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(784, 512),
-        nn.ReLU(),
-        nn.Linear(512, 512),
-        nn.ReLU(),
-        nn.Linear(512, M*2),
-    )
-
-    decoder_net = nn.Sequential(
-        nn.Linear(M, 512),
-        nn.ReLU(),
-        nn.Linear(512, 512),
-        nn.ReLU(),
-        nn.Linear(512, 784),
-        nn.Unflatten(-1, (28, 28))
-    )
-
-    # Define VAE model
-    decoder = BernoulliDecoder(decoder_net)
-    encoder = GaussianEncoder(encoder_net)
+    encoder = GaussianEncoder(VAEEncoderNet(M))
+    decoder = BernoulliDecoder(VAEDecoderNet(M))
     beta = args.beta
     model = VAE(prior, decoder, encoder,beta).to(device)
 
@@ -373,7 +401,11 @@ if __name__ == "__main__":
         
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         print(f"ELBO plot saved to: {plot_path}")
-        torch.save(model.state_dict(), os.path.join(args.saved_folder, args.model))
+        save_dict = {
+            'model_state_dict': model.state_dict(),
+            'args': vars(args) 
+        }
+        torch.save(save_dict, os.path.join(args.saved_folder, args.model))
     
     elif args.mode == 'test':
         import matplotlib.pyplot as plt
