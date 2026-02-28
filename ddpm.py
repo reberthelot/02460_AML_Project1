@@ -136,19 +136,24 @@ def ddpm_load(checkpoint_path, device):
     """
     checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
     
-    T = checkpoint.get('T', 1000) # Default T if not in checkpoint
+    T = checkpoint.get('T', 1000)
+    D = checkpoint.get('D', 784) # Also get D, useful for sampling shape
+    beta_vae_path = checkpoint.get('beta_vae', None) # Get beta_vae path if present
     
     if checkpoint['network'] == 'fully':
         loaded_num_hidden = checkpoint['num_hidden']
         network_to_use = FcNetwork(checkpoint['D'], loaded_num_hidden)
     elif checkpoint['network'] == 'unet':
-        network_to_use = unet.Unet()
+        if beta_vae_path != None :
+            network_to_use = unet.LatentUnet(D)
+        else:
+            network_to_use = unet.Unet()
     else:
         raise ValueError(f"Unknown network type: {checkpoint['network']}")
 
     model = DDPM(network_to_use, T=T).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    return model
+    return model, D, beta_vae_path
 
 
 def train(model, optimizer, data_loader, epochs, device, scheduler=None):

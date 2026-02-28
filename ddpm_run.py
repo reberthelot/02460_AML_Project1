@@ -14,12 +14,12 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 100 --batch-size 64 --network unet --lr 1e-3
-    # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
+    # python ddpm_run.py train --model model_ddpm.pt --device cuda --epochs 100 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm_run.py sample --model model_ddpm.pt --device cuda --samples sample_ddpm.png
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist_mog.pt --beta-vae model_mog_run_2.pt --device cuda --epochs 50 --batch-size 64 --lr 1e-3
-    # python ddpm_run.py sample --model model_ddpm_mnist_mog.pt --beta-vae model_mog_run_2.pt --device cuda --samples sample_ddpm_mnist_mog.png
+    # python ddpm_run.py train --model model_ddpm_bvae_unet.pt --beta-vae results_beta_flow/model_flow_beta_1e-06.pt --device cuda --epochs 100 --batch-size 64 --lr 1e-3 --network unet
+    # python ddpm_run.py sample --model model_ddpm_bvae_unet.pt --beta-vae results_beta_flow/model_flow_beta_1e-06.pt --device cuda --samples sample_ddpm_bvae_unet.png
 
 
     # Parse arguments
@@ -72,7 +72,6 @@ if __name__ == "__main__":
         # Retrieve encoder and decoder
         encoder = vae_model.encoder
         decoder = vae_model.decoder
-        args.network = 'fully'
         args.binarized = True
         
         # Generate the data
@@ -128,7 +127,10 @@ if __name__ == "__main__":
             network = FcNetwork(D, num_hidden)
         else :
             import unet
-            network = unet.Unet()
+            if args.beta_vae :
+                network = unet.LatentUnet(D)
+            else :
+                network = unet.Unet()
         # Define model
         model = DDPM(network, T=T).to(args.device)
 
@@ -153,6 +155,8 @@ if __name__ == "__main__":
             'network': args.network,
             'D': D,
             'T': T,
+            'beta_vae': args.beta_vae,
+            'latent_dim': args.latent_dim
         }
         if args.network == 'fully':
             save_dict['num_hidden'] = num_hidden
@@ -163,7 +167,7 @@ if __name__ == "__main__":
         # Determine plot filename
         if args.plotname:
             plot_filename = args.plotname
-        else: # Derive from model name, e.g., model_ddpm_mnist.pt -> loss_model_ddpm_mnist.png
+        else: # Derive from model name, e.g., model_ddpm.pt -> loss_model_ddpm.png
             model_base_name = os.path.splitext(args.model)[0]
             plot_filename = f"loss_{model_base_name}.png"
         
@@ -180,7 +184,7 @@ if __name__ == "__main__":
     elif args.mode == 'sample':
         import numpy as np
 
-        model = ddpm_load(os.path.join(args.saved_folder, args.model), args.device)
+        model, _, _ = ddpm_load(os.path.join(args.saved_folder, args.model), args.device)
 
         model.eval()
         with torch.no_grad():

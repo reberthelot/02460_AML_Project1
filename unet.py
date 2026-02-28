@@ -108,3 +108,85 @@ class Unet(torch.nn.Module):
                 signal = tconv(signal)
         signal = torch.reshape(signal, (*signal.shape[:-3], -1))  # (..., 1 * 28 * 28)
         return signal
+
+class LatentUnet(torch.nn.Module):
+    """
+    A U-Net-like architecture for latent vectors that takes an input vector and time.
+    This is intended for use in a DDPM operating on the latent space of a VAE.
+    """
+    def __init__(self, D, dims=[64, 32, 16]):
+        """
+        Initialize the LatentUnet.
+
+        Parameters:
+        D: [int]
+            The dimension of the input latent vector.
+        dims: [list of int]
+            A list of dimensions for the downscaling/upscaling path.
+        """
+        super().__init__()
+        self.down_layers = torch.nn.ModuleList()
+        self.up_layers = torch.nn.ModuleList()
+        
+        # Downscaling path
+        # The first layer takes the latent vector D and time (1) as input
+        current_dims = [D + 1] + dims
+        
+        for i in range(len(current_dims) - 1):
+            self.down_layers.append(torch.nn.Sequential(
+                torch.nn.Linear(current_dims[i], current_dims[i+1]),
+                torch.nn.ReLU()
+            ))
+            
+        # Bottleneck
+        self.bottleneck = torch.nn.Sequential(
+            torch.nn.Linear(dims[-1], dims[-1]),
+            torch.nn.ReLU()
+        )
+        
+        # Upscaling path
+        reversed_dims = dims[::-1]
+        for i in range(len(reversed_dims) - 1):
+            # Input is from previous up_layer + skip connection from down_layer
+            in_dim = reversed_dims[i] + reversed_dims[i+1]
+            out_dim = reversed_dims[i+1]
+            self.up_layers.append(torch.nn.Sequential(
+                torch.nn.Linear(in_dim, out_dim),
+                torch.nn.ReLU()
+            ))
+            
+        # Final layer to map back to the original latent dimension D
+        self.final_layer = torch.nn.Linear(dims[0], D)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the LatentUnet.
+
+        Parameters:
+        x: [torch.Tensor]
+            The input latent vector of dimension `(batch_size, D)`.
+        t: [torch.Tensor]
+            The time steps of dimension `(batch_size, 1)`.
+        
+        Returns:
+        [torch.Tensor]
+            The output vector of dimension `(batch_size, D)`.
+        """
+        xt = torch.cat([x, t], dim=1)
+        
+        skip_connections = []
+        signal = xt
+        for i, layer in enumerate(self.down_layers):
+            signal = layer(signal)
+            if i < len(self.down_layers) - 1:
+                skip_connections.append(signal)
+        
+        signal = self.bottleneck(signal)
+        
+        for layer in self.up_layers:
+            skip_signal = skip_connections.pop()
+            signal = torch.cat([signal, skip_signal], dim=1)
+            signal = layer(signal)
+            
+        output = self.final_layer(signal)
+        return output
