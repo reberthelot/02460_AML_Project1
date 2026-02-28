@@ -1,56 +1,103 @@
-import os, subprocess, re, argparse
+import os
+import subprocess
+import sys
+import re
+import argparse
 
-# --- CLI Setup ---
+# --- CLI Configuration ---
 parser = argparse.ArgumentParser(description="Beta-VAE Hyperparameter Runner")
 parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'])
-# List of beta values to test
-parser.add_argument('--betas', type=list, default=[1e-6, 1e-4, 1e-2, 1e-1])
+# nargs='+' allows passing multiple values: --betas 1e-6 1e-4 0.1
+parser.add_argument('--betas', type=float, nargs='+', default=[1e-6, 1e-4, 1e-2, 1e-1])
 args_runner = parser.parse_args()
 
-# --- Configuration ---
+# --- Setup ---
 prior = args_runner.prior
 betas = args_runner.betas
 output_dir = f'results_beta_{prior}'
 os.makedirs(output_dir, exist_ok=True)
 
-print(f"\n=== TRAINING BETA-VAE SERIES: PRIOR={prior.upper()} ===")
+def run_and_display(cmd):
+    """
+    Runs a command and streams the output (stdout & stderr) 
+    to the terminal in real-time.
+    """
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, # Merge stderr into stdout to catch tqdm bars
+        text=True,
+        bufsize=1
+    )
+    
+    full_output = []
+    
+    # Read output line by line as it happens
+    for line in iter(process.stdout.readline, ""):
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        full_output.append(line)
+        
+    process.stdout.close()
+    return_code = process.wait()
+    return return_code, "".join(full_output)
+
+print(f"\n=== STARTING BETA-VAE GRID SEARCH: PRIOR={prior.upper()} ===")
+print(f"Results will be saved in: {output_dir}")
+
+results_summary = []
 
 for beta in betas:
-    # Model name includes the beta value to avoid overwriting files
-    model_name = f"model_{prior}_beta_{beta}.pt"
-    model_path = os.path.join(output_dir, model_name)
+    model_filename = f"model_{prior}_beta_{beta}.pt"
     
-    print(f"\n> Training for beta = {beta}...")
+    print("\n" + "="*70)
+    print(f"  RUNNING EXPERIMENT: beta = {beta}")
+    print("="*70 + "\n")
     
     # 1. Training Phase
-    # Ensure your vae.py script is configured to accept the --beta argument
-    train_proc = subprocess.run([
+    # Note: We separate folder and filename to avoid path conflicts in vae.py
+    train_cmd = [
         "python", "vae.py", "train", 
         "--prior", prior, 
-        "--model", model_path, 
+        "--saved-folder", output_dir, 
+        "--model", model_filename, 
         "--epochs", "10", 
-        "--beta", str(beta)  # Pass the beta value
-    ], capture_output=True, text=True)
+        "--beta", str(beta)
+    ]
+    
+    ret_code, train_output = run_and_display(train_cmd)
 
-    if train_proc.returncode != 0:
-        print(f"   !!! TRAINING FAILED for beta={beta} !!!")
-        print(f"   ERROR: {train_proc.stderr}")
+    if ret_code != 0:
+        print(f"\n[!] Training failed for beta={beta}. Skipping to next...")
         continue
-    else:
-        print(f"   Success! Model saved at: {model_path}")
 
-    # 2. Evaluation Phase
-    # Running a quick test to capture the ELBO for logging
-    test_res = subprocess.run([
+    # 2. Evaluation Phase (Test)
+    print(f"\n> Evaluating model for beta={beta}...")
+    test_cmd = [
         "python", "vae.py", "test", 
         "--prior", prior, 
-        "--model", model_path,
+        "--saved-folder", output_dir,
+        "--model", model_filename,
         "--beta", str(beta)
-    ], capture_output=True, text=True)
+    ]
+    
+    ret_code, test_output = run_and_display(test_cmd)
 
-    # Extracting the Average ELBO using Regex
-    match = re.search(r"Average ELBO:\s*([-+]?\d*\.\d+|\d+)", test_res.stdout)
+    # 3. Extract final ELBO using Regex
+    match = re.search(r"Average ELBO:\s*([-+]?\d*\.\d+|\d+)", test_output)
     if match:
-        print(f"   Average ELBO: {match.group(1)}")
+        elbo_val = match.group(1)
+        print(f"\n[SUCCESS] Beta: {beta} | Average ELBO: {elbo_val}")
+        results_summary.append((beta, elbo_val))
     else:
-        print("   Warning: Could not extract ELBO from test output.")
+        print(f"\n[WARNING] Training finished but ELBO value not found in output.")
+
+# --- Final Summary ---
+print("\n" + "#"*30)
+print("   FINAL RESULTS SUMMARY")
+print("#"*30)
+print(f"{'Beta':<10} | {'Average ELBO':<15}")
+print("-" * 28)
+for b, e in results_summary:
+    print(f"{b:<10} | {e:<15}")
+print("#"*30)

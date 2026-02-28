@@ -276,7 +276,14 @@ def vae_load(checkpoint_path,hardcoded_arguments,device):
                 if i > 0:
                     current_mask = (1 - current_mask)
             
-            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            scale_net = nn.Sequential(
+                nn.Linear(M, num_hidden),
+                nn.SiLU(), 
+                nn.Linear(num_hidden, num_hidden),
+                nn.SiLU(),
+                nn.Linear(num_hidden, M),
+                nn.Tanh()
+            )
             translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
             transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
         prior = FlowPrior(base, transformations)
@@ -357,7 +364,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     
     parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'], help='type of prior p(z) (default: %(default)s)')
-    parser.add_argument('--mask-type', type=str, default='checkerboard', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
+    parser.add_argument('--mask-type', type=str, default='randominit', choices=['checkerboard', 'channelwise','randominit'], help='type of mask to use in the coupling layers (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--K', type=int, default=32, metavar='N', help='The number of components in the mixture model. (default: %(default)s)')
     
@@ -499,7 +506,7 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
+            model = vae_load(os.path.join(args.saved_folder, args.model),vars(args), args.device)
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)
@@ -623,7 +630,7 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model = vae_load(os.path.join(args.saved_folder, args.model), args.device)
+            model = vae_load(os.path.join(args.saved_folder, args.model),vars(args), args.device)
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)
