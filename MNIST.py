@@ -89,8 +89,7 @@ class LatentMNIST:
         encoder.to(self.device)
         encoder.eval()
         
-        all_z = []
-        all_y = []
+        all_z, all_y = [], []
         
         # Use a temporary loader to process the raw images
         temp_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)

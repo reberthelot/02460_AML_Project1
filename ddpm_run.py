@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
-from ddpm import DDPM, FcNetwork, train
+from ddpm import DDPM, FcNetwork, train, ddpm_load
 import MNIST as MNIST
 
 if __name__ == "__main__":
@@ -14,7 +14,7 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     
 
-    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 50 --batch-size 64 --network unet --lr 1e-3
+    # python ddpm_run.py train --model model_ddpm_mnist.pt --device cuda --epochs 100 --batch-size 64 --network unet --lr 1e-3
     # python ddpm_run.py sample --model model_ddpm_mnist.pt --device cuda --samples sample_ddpm_mnist.png
     
 
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     # The beta VAE different to none will over-ride the network argument to fully.
 
     parser.add_argument('--network', type=str, default='fully', choices=['unet', 'fully'], help='Choose the network type (default: %(default)s)')
-    parser.add_argument('--T', type=float, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
+    parser.add_argument('--T', type=int, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
 
     parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
     parser.add_argument('--saved-folder',type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
@@ -152,6 +152,7 @@ if __name__ == "__main__":
             'model_state_dict': model.state_dict(),
             'network': args.network,
             'D': D,
+            'T': T,
         }
         if args.network == 'fully':
             save_dict['num_hidden'] = num_hidden
@@ -179,20 +180,7 @@ if __name__ == "__main__":
     elif args.mode == 'sample':
         import numpy as np
 
-        # Load the model
-        checkpoint = torch.load(os.path.join(args.saved_folder,args.model), map_location=torch.device(args.device))
-        print(f'Selected model type: {checkpoint["network"]}')
-        if checkpoint['network'] == 'fully':
-            loaded_num_hidden = checkpoint['num_hidden']
-            network_to_use = FcNetwork(checkpoint['D'], loaded_num_hidden)
-        elif checkpoint['network'] == 'unet':
-            import unet
-            network_to_use = unet.Unet()
-        else:
-            raise ValueError(f"Unknown network type: {checkpoint['network']}")
-        # Initialize the DDPM model with the correct network
-        model = DDPM(network_to_use, T=T).to(args.device) 
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model = ddpm_load(os.path.join(args.saved_folder, args.model), args.device)
 
         model.eval()
         with torch.no_grad():

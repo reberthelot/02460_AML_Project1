@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.distributions as td
 import torch.nn.functional as F
 from tqdm import tqdm
+import argparse
+import unet
 
 
 class DDPM(nn.Module):
@@ -33,6 +35,10 @@ class DDPM(nn.Module):
         self.alpha = nn.Parameter(1 - self.beta, requires_grad=False)
         self.alpha_cumprod = nn.Parameter(self.alpha.cumprod(dim=0), requires_grad=False)
     
+    @property
+    def device(self):
+        return self.alpha.device
+
     def negative_elbo(self, x):
         """
         Evaluate the DDPM negative ELBO on a batch of data.
@@ -46,9 +52,9 @@ class DDPM(nn.Module):
         """
         batch_size = x.shape[0]
         # Sampling t uniformly from {0,....,T-1})
-        t = torch.randint(0, self.T, size=(batch_size, 1), device=x.device)
+        t = torch.randint(0, self.T, size=(batch_size, 1), device=self.device)
         # Sampling the uniform
-        epsilon = torch.randn_like(x,device=x.device)
+        epsilon = torch.randn_like(x,device=self.device)
         output = self.network(torch.sqrt(self.alpha_cumprod[t]) * x + torch.sqrt(1 - self.alpha_cumprod[t]) * epsilon, t.float() / self.T)
         # Division of time by self.T in order to cap the time between 0 and 1, else time is predominating compared to images.
         neg_elbo = torch.sum((epsilon - output) ** 2, dim=1)
@@ -66,22 +72,18 @@ class DDPM(nn.Module):
             The generated samples.
         """
         # Sample x_t for t=T (i.e., Gaussian noise)
-        x_t = torch.randn(shape).to(self.alpha.device)
+        x_t = torch.randn(shape).to(self.device)
         batch_size = x_t.shape[0]
         # Sample x_t given x_{t+1} until x_0 is sampled
-        for t in range(self.T-1, -1, -1) :
+        for t in range(self.T-1, -1, -1) : # Sample x_t given x_{t+1} until x_0 is sampled
+            t_matrix = torch.full((batch_size,1),fill_value=t/self.T,dtype=torch.float).to(self.device)
             if t > 0 : 
-                z = torch.randn(shape).to(self.alpha.device)
+                z = torch.randn(shape).to(self.device)
             else :
                 z = 0
-            # Pass loop
-            x_t = 1 / torch.sqrt(self.alpha[t]) * (x_t - (1-self.alpha[t]) /
-                                torch.sqrt(1-self.alpha_cumprod[t]) * self.network(
-                                    x_t,torch.full((batch_size,1),fill_value=t/self.T, dtype=torch.float).to(self.alpha.device)
-                                    )
-                                ) + torch.sqrt(self.beta[t]) * z
+            x_t = 1 / torch.sqrt(self.alpha[t]) * (x_t - (1-self.alpha[t]) / torch.sqrt(1-self.alpha_cumprod[t]) * 
+                self.network(x_t,t_matrix)) + torch.sqrt(self.beta[t]) * z
             # Division of time by self.T in order to cap the time between 0 and 1 - else it will predominate compared to the x.
-
         return x_t
 
     def loss(self, x):
@@ -126,6 +128,27 @@ class FcNetwork(nn.Module):
         """
         x_t_cat = torch.cat([x, t], dim=1)
         return self.network(x_t_cat)
+
+
+def ddpm_load(checkpoint_path, device):
+    """
+    Load a DDPM model from a checkpoint, reconstructing the architecture.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
+    
+    T = checkpoint.get('T', 1000) # Default T if not in checkpoint
+    
+    if checkpoint['network'] == 'fully':
+        loaded_num_hidden = checkpoint['num_hidden']
+        network_to_use = FcNetwork(checkpoint['D'], loaded_num_hidden)
+    elif checkpoint['network'] == 'unet':
+        network_to_use = unet.Unet()
+    else:
+        raise ValueError(f"Unknown network type: {checkpoint['network']}")
+
+    model = DDPM(network_to_use, T=T).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    return model
 
 
 def train(model, optimizer, data_loader, epochs, device, scheduler=None):
