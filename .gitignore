@@ -6,7 +6,6 @@ pt
 output_PartA/
 output_PartB/
 
-part2_plotting.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -114,7 +114,7 @@ class LatentUnet(torch.nn.Module):
     A U-Net-like architecture for latent vectors that takes an input vector and time.
     This is intended for use in a DDPM operating on the latent space of a VAE.
     """
-    def __init__(self, D, dims=[64, 32, 16]):
+    def __init__(self, D, dims=[256, 128, 64]):
         """
         Initialize the LatentUnet.
 
