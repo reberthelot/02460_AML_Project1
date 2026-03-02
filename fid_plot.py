@@ -85,31 +85,95 @@ def mnist(n: int, root: str = "../data", device: str = "cpu") -> torch.Tensor:
     x, _ = next(iter(dl))
     return x.to(device) * 2 - 1
 
-
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    n = 5000
+    dev = torch.device(device)
+    n = 50
+
+    betas = [1, 0.1, 0.01, 0.0001, 1e-6]
 
     x_real = mnist(n=n, device=device)
 
-    ddpm, _, _ = ddpm_load("models/model_ddpm_100.pt", torch.device(device))
+    print("Loading DDPM")
+    ddpm, D_ddpm, _ = ddpm_load("models/model_ddpm_100.pt", dev)
     ddpm = ddpm.eval()
 
-    latent_ddpm, _, _ = ddpm_load("models/model_ddpm_bvae_unet.pt", torch.device(device))
+    with torch.no_grad():
+        print("Sampling DDPM")
+        x_ddpm = ddpm.sample(shape=(n, D_ddpm)).to(device).view(n, 1, 28, 28)
+
+    print("Loading Latent DDPM (beta=1e-6)")
+    latent_ddpm, D_lat, _ = ddpm_load("models/model_ddpm_bvae_unet.pt", dev)
     latent_ddpm = latent_ddpm.eval()
 
-    with torch.no_grad():
-        x_ddpm = ddpm.sample(shape=(n, 784)).to(device).view(-1, 1, 28, 28)
-        x_latent_ddpm = latent_ddpm.sample(shape=(n, 784)).to(device).view(-1, 1, 28, 28)
+    hardcoded = {"K": 32, "latent_dim": 32, "prior": "mog", "beta": 1}
+
+    print("Loading beta-VAEs and sampling")
+    bvae_samples = {}
+    beta_fid_rows = []
+
+    for b in betas:
+        path = f"results_beta_flow/model_flow_beta_{b}.pt"
+
+        bvae = vae_load(
+            checkpoint_path=path,
+            hardcoded_arguments=hardcoded,
+            device=dev,
+        ).eval()
+
+        decoder = bvae.decoder
+
+        with torch.no_grad():
+            z = torch.randn(n, hardcoded["latent_dim"], device=device)
+            x_bvae = decoder(z).mean
+
+            if x_bvae.dim() == 2:
+                x_bvae = x_bvae.view(n, 1, 28, 28)
+            elif x_bvae.dim() == 3:
+                x_bvae = x_bvae.unsqueeze(1)
+
+            if x_bvae.max() <= 1.0 and x_bvae.min() >= 0.0:
+                x_bvae = x_bvae * 2 - 1
+
+        bvae_samples[f"bVAE_beta={b}"] = x_bvae
+
+        fid_val = float(
+            compute_fid(
+                x_real=x_real,
+                x_gen=x_bvae,
+                device=device,
+                classifier_ckpt="mnist_classifier.pth",
+            )
+        )
+
+        beta_fid_rows.append({"beta": b, "fid": fid_val})
+        print(f"bVAE beta={b} | FID={fid_val:.6f}")
+
+        if b == 1e-6:
+            with torch.no_grad():
+                z_lat = latent_ddpm.sample(shape=(n, D_lat)).to(device)
+                x_latent = decoder(z_lat).mean
+
+                if x_latent.dim() == 2:
+                    x_latent = x_latent.view(n, 1, 28, 28)
+                elif x_latent.dim() == 3:
+                    x_latent = x_latent.unsqueeze(1)
+
+                if x_latent.max() <= 1.0 and x_latent.min() >= 0.0:
+                    x_latent = x_latent * 2 - 1
 
     gens = {
         "DDPM": x_ddpm,
-        "LatentDDPM": x_latent_ddpm,
+        "LatentDDPM": x_latent,
+        "bVAE": bvae_samples["bVAE_beta=1e-06"],
     }
 
-    df = fid_table(x_real, gens, device=device)
-    print(df)
-    plot_fid(df)
+    df_models = fid_table(x_real, gens, device=device)
+    print(df_models)
+    plot_fid(df_models)
+
+    df_beta = pd.DataFrame(beta_fid_rows).sort_values("beta")
+    plot_fid_beta(df_beta)
 
 
 if __name__ == "__main__":
