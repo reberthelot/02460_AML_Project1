@@ -1,13 +1,14 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable, Sequence
 
 import torch
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
-from typing import Callable, Sequence
 
 from fid import compute_fid
+from ddpm import ddpm_load
+from vae import vae_load
 
 
 @torch.no_grad()
@@ -17,17 +18,15 @@ def fid_table(
     device: str = "cpu",
     ckpt: str = "mnist_classifier.pth",
 ) -> pd.DataFrame:
-
     x_real = x_real.to(device)
     rows = []
-
     for model, x_gen in gens.items():
         x_gen = x_gen.to(device)
         fid = float(compute_fid(x_real=x_real, x_gen=x_gen, device=device, classifier_ckpt=ckpt))
         rows.append({"model": model, "fid": fid})
         print(f"{model:>12} | FID={fid:.6f}")
-
     return pd.DataFrame(rows)
+
 
 @torch.no_grad()
 def fid_beta_table(
@@ -40,27 +39,22 @@ def fid_beta_table(
 ) -> pd.DataFrame:
     x_real = x_real.to(device)
     rows = []
-
     for b in betas:
         x_gen = sample_beta(float(b), n, device).to(device)
         fid = float(compute_fid(x_real=x_real, x_gen=x_gen, device=device, classifier_ckpt=ckpt))
         rows.append({"beta": float(b), "fid": fid})
         print(f"beta={b:.6g} | FID={fid:.6f}")
-
     return pd.DataFrame(rows).sort_values("beta").reset_index(drop=True)
-
 
 
 def plot_fid_beta(df: pd.DataFrame, save: Optional[str] = None, title: str = "FID vs beta"):
     sns.set_theme(style="whitegrid")
-
     plt.figure(figsize=(8, 5))
     sns.lineplot(data=df, x="beta", y="fid", marker="o")
     plt.xscale("log")
     plt.xlabel("beta (log scale)")
     plt.ylabel("FID")
     plt.title(title)
-
     if save:
         import os
         os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
@@ -72,12 +66,10 @@ def plot_fid_beta(df: pd.DataFrame, save: Optional[str] = None, title: str = "FI
 
 def plot_fid(df: pd.DataFrame, save: Optional[str] = None):
     sns.set_theme(style="whitegrid")
-
     plt.figure(figsize=(8, 5))
     sns.barplot(data=df, x="model", y="fid")
     plt.ylabel("FID")
     plt.xlabel("Model")
-
     if save:
         import os
         os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
@@ -94,37 +86,30 @@ def mnist(n: int, root: str = "../data", device: str = "cpu") -> torch.Tensor:
     return x.to(device) * 2 - 1
 
 
-def noise(x: torch.Tensor, s: float) -> torch.Tensor:
-    return torch.clamp(x + s * torch.randn_like(x), -1, 1)
-
-
 def main():
-    """
-    Currently this file runs some test data using gaussian noise. No implementation of actual models.
-    """
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     n = 5000
+
     x_real = mnist(n=n, device=device)
 
+    ddpm, _, _ = ddpm_load("models/model_ddpm_100.pt", torch.device(device))
+    ddpm = ddpm.eval()
+
+    latent_ddpm, _, _ = ddpm_load("models/model_ddpm_bvae_unet.pt", torch.device(device))
+    latent_ddpm = latent_ddpm.eval()
+
+    with torch.no_grad():
+        x_ddpm = ddpm.sample(shape=(n, 784)).to(device).view(-1, 1, 28, 28)
+        x_latent_ddpm = latent_ddpm.sample(shape=(n, 784)).to(device).view(-1, 1, 28, 28)
+
     gens = {
-        "Perfect": noise(x_real, 0.0),
-        "LowNoise": noise(x_real, 0.1),
-        "MediumNoise": noise(x_real, 0.3),
-        "HighNoise": noise(x_real, 0.8),
+        "DDPM": x_ddpm,
+        "LatentDDPM": x_latent_ddpm,
     }
+
     df = fid_table(x_real, gens, device=device)
+    print(df)
     plot_fid(df)
-
-    def sample_beta_dummy(beta: float, n: int, device: str) -> torch.Tensor:
-        x = mnist(n=n, device=device)
-        sigma = min(1.0, max(0.0, 5.0 * beta**0.5))  # arbitrary mapping just for testing
-        return noise(x, sigma)
-
-    betas = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
-    dfb = fid_beta_table(x_real, sample_beta_dummy, betas, n=n, device=device)
-    print("\nBeta table:")
-    print(dfb)
-    plot_fid_beta(dfb, title="Test: FID vs beta (dummy)")
 
 
 if __name__ == "__main__":
