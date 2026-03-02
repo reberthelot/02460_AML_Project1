@@ -88,7 +88,7 @@ def mnist(n: int, root: str = "../data", device: str = "cpu") -> torch.Tensor:
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
-    n = 50
+    n = 100
 
     betas = [1, 0.1, 0.01, 0.0001, 1e-6]
 
@@ -165,7 +165,7 @@ def main():
     gens = {
         "DDPM": x_ddpm,
         "LatentDDPM": x_latent,
-        "bVAE": bvae_samples["bVAE_beta=1e-06"],
+        f"bVAE (β=0.0001)": bvae_samples["bVAE_beta=0.0001"],
     }
 
     df_models = fid_table(x_real, gens, device=device)
