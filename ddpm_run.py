@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
-from ddpm import DDPM, FcNetwork, train, ddpm_load
+from ddpm import DDPM, train, ddpm_load
 import MNIST as MNIST
 
 if __name__ == "__main__":
@@ -31,11 +31,18 @@ if __name__ == "__main__":
 
     # The beta VAE different to none will over-ride the network argument to fully.
 
-    parser.add_argument('--network', type=str, default='fully', choices=['unet', 'fully'], help='Choose the network type (default: %(default)s)')
-    parser.add_argument('--T', type=int, default=1000, metavar='V', help='Number of steps in the diffusion process (default: %(default)s)')
+    parser.add_argument('--network', type=str, default='fully',choices=['unet', 'fully', 'resnet'],help='Choose the network type (default: %(default)s)')
+    parser.add_argument('--T', type=int, default=1000, metavar='V',help='Number of steps in the diffusion process (default: %(default)s)')
 
-    parser.add_argument('--plotname', type=str, default=None, help='filename for the loss plot (default: derived from model name)')
-    parser.add_argument('--saved-folder',type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
+    parser.add_argument('--plotname', type=str, default=None,help='filename for the loss plot (default: derived from model name)')
+    parser.add_argument('--saved-folder', type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
+
+    # latent‑unet dims and resnet hyperparameters
+    parser.add_argument('--latent-dims', type=int, nargs='+',default=[256, 128, 64],help='dimensions for the latent U‑Net (space separated list)')
+    parser.add_argument('--resnet-hidden-dim', type=int, default=512, help='hidden dimension of LatentResNet (default: %(default)s)')
+    parser.add_argument('--resnet-num-blocks', type=int, default=4,help='number of residual blocks for LatentResNet')
+    parser.add_argument('--resnet-time-dim', type=int, default=128,help='time‑embedding dimension for LatentResNet')
+    
 
     parser.add_argument('--binarized', type=bool, default=False, choices=[True, False], help='Whether or not to binarize the images (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
@@ -121,16 +128,26 @@ if __name__ == "__main__":
 
     # Choose mode to run
     if args.mode == 'train':
+        import ddpm_models
         # Define the network
         if args.network == 'fully':
             num_hidden = 64
-            network = FcNetwork(D, num_hidden)
-        else :
-            import unet
+            network = ddpm_models.FcNetwork(D, num_hidden)
+        elif args.network == 'unet':
             if args.beta_vae :
-                network = unet.LatentUnet(D)
+                network = ddpm_models.LatentUnet(D, dims=args.latent_dims)
             else :
-                network = unet.Unet()
+                network = ddpm_models.Unet()
+        elif args.network == 'resnet':
+            network = ddpm_models.LatentResNet(D,
+                hidden_dim=args.resnet_hidden_dim,
+                num_blocks=args.resnet_num_blocks,
+                time_dim=args.resnet_time_dim,
+            )
+        else:
+            raise ValueError(f"Unknown network type: {args.network}")
+
+
         # Define model
         model = DDPM(network, T=T).to(args.device)
 
@@ -160,6 +177,14 @@ if __name__ == "__main__":
         }
         if args.network == 'fully':
             save_dict['num_hidden'] = num_hidden
+
+        # add extra hyper‑parameters when appropriate
+        if isinstance(network, ddpm_models.LatentUnet):
+            save_dict['dims'] = network.dims
+        if isinstance(network, ddpm_models.LatentResNet):
+            save_dict['hidden_dim'] = network.hidden_dim
+            save_dict['num_blocks'] = network.num_blocks
+            save_dict['time_dim'] = network.time_dim
 
         # Ensure output_PartB directory exists for plots
         os.makedirs(args.saved_folder, exist_ok=True)

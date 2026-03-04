@@ -7,7 +7,7 @@ import torch.distributions as td
 import torch.nn.functional as F
 from tqdm import tqdm
 import argparse
-import unet
+import ddpm_models
 
 
 class DDPM(nn.Module):
@@ -100,36 +100,6 @@ class DDPM(nn.Module):
         return self.negative_elbo(x).mean()
 
 
-class FcNetwork(nn.Module):
-    def __init__(self, input_dim, num_hidden):
-        """
-        Initialize a fully connected network for the DDPM, where the forward function also take time as an argument.
-        
-        parameters:
-        input_dim: [int]
-            The dimension of the input data.
-        num_hidden: [int]
-            The number of hidden units in the network.
-        """
-        super(FcNetwork, self).__init__()
-        self.network = nn.Sequential(nn.Linear(input_dim+1, num_hidden), nn.ReLU(), 
-                                     nn.Linear(num_hidden, num_hidden), nn.ReLU(), 
-                                     nn.Linear(num_hidden, input_dim))
-
-    def forward(self, x, t):
-        """"
-        Forward function for the network.
-        
-        parameters:
-        x: [torch.Tensor]
-            The input data of dimension `(batch_size, input_dim)`
-        t: [torch.Tensor]
-            The time steps to use for the forward pass of dimension `(batch_size, 1)`
-        """
-        x_t_cat = torch.cat([x, t], dim=1)
-        return self.network(x_t_cat)
-
-
 def ddpm_load(checkpoint_path, device):
     """
     Load a DDPM model from a checkpoint, reconstructing the architecture.
@@ -137,19 +107,31 @@ def ddpm_load(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
     
     T = checkpoint.get('T', 1000)
-    D = checkpoint.get('D', 784) # Also get D, useful for sampling shape
-    beta_vae_path = checkpoint.get('beta_vae', None) # Get beta_vae path if present
+    D = checkpoint.get('D', 784)  # Also get D, useful for sampling shape
+    beta_vae_path = checkpoint.get('beta_vae', None)  # Get beta_vae path if present
     
-    if checkpoint['network'] == 'fully':
+    net_type = checkpoint['network']
+    if net_type == 'fully':
         loaded_num_hidden = checkpoint['num_hidden']
-        network_to_use = FcNetwork(checkpoint['D'], loaded_num_hidden)
-    elif checkpoint['network'] == 'unet':
-        if beta_vae_path != None :
-            network_to_use = unet.LatentUnet(D)
+        network_to_use = ddpm_models.FcNetwork(D, loaded_num_hidden)
+    elif net_type == 'unet':
+        if beta_vae_path is not None:
+            dims = checkpoint.get('dims', [256, 128, 64])
+            network_to_use = ddpm_models.LatentUnet(D, dims=dims)
         else:
-            network_to_use = unet.Unet()
+            network_to_use = ddpm_models.Unet()
+    elif net_type == 'resnet':
+        hidden_dim = checkpoint.get('hidden_dim', 512)
+        num_blocks = checkpoint.get('num_blocks', 4)
+        time_dim = checkpoint.get('time_dim', 128)
+        network_to_use = ddpm_models.LatentResNet(
+            D,
+            hidden_dim=hidden_dim,
+            num_blocks=num_blocks,
+            time_dim=time_dim
+        )
     else:
-        raise ValueError(f"Unknown network type: {checkpoint['network']}")
+        raise ValueError(f"Unknown network type: {net_type}")
 
     model = DDPM(network_to_use, T=T).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])

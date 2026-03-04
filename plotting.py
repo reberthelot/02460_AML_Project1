@@ -11,11 +11,10 @@ import seaborn as sns
 from matplotlib.lines import Line2D
 
 
-from ddpm import ddpm_load, FcNetwork
+from ddpm import ddpm_load
 from vae import vae_load
 from fid import compute_fid
 from MNIST import MNIST
-from unet import Unet
 
 def plot_samples(ddpm_samples, latent_ddpm_samples, vae_samples, save_path):
     """Generates and saves a 3x4 grid of samples from the three models."""
