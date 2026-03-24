@@ -9,6 +9,10 @@ from tqdm import tqdm
 import argparse
 import ddpm_models
 
+"""
+Implementation of Denoising Diffusion Probabilistic Models (DDPMs) for generative modeling.
+Includes the DDPM class, training utilities, and model loading functions.
+"""
 
 class DDPM(nn.Module):
     def __init__(self, network, beta_1=1e-4, beta_T=2e-2, T=100):

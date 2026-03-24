@@ -1,6 +1,11 @@
 import os, subprocess, re, time, random, argparse
 import numpy as np
 
+"""
+Script for benchmarking VAE models with different priors across multiple runs.
+Trains and evaluates VAEs, extracting ELBO scores and computing statistics.
+"""
+
 # --- CLI Setup ---
 parser = argparse.ArgumentParser()
 parser.add_argument('--prior', type=str, default='gaussian', choices=['gaussian', 'mog', 'flow'])

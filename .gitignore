@@ -5,8 +5,9 @@ pt
 # Output folder
 output_PartA/
 output_PartB/
-
-
+models/ddpm/
+models/latent_ddpm/
+.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

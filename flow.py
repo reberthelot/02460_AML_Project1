@@ -10,6 +10,10 @@ import torch.distributions as td
 from tqdm import tqdm
 import importlib
 
+"""
+Implementation of normalizing flows using masked coupling layers for density estimation and generative modeling.
+Includes base distributions, coupling layers, flow models, and training utilities.
+"""
 
 class GaussianBase(nn.Module):
     def __init__(self, D):
@@ -225,7 +229,6 @@ def train(model, optimizer, data_loader, epochs, device):
             loss.backward()
             optimizer.step()
 
-            # Update progress bar
             progress_bar.set_postfix(loss=f"{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
 

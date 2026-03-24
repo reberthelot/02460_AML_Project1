@@ -2,26 +2,23 @@ import torch
 import torch.nn as nn
 import torch.distributions as td
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
 from ddpm import DDPM, train, ddpm_load
 import MNIST as MNIST
+
+"""
+Script for training and sampling Denoising Diffusion Probabilistic Models (DDPMs) on MNIST data or latent spaces from Beta-VAEs.
+Supports different network architectures and evaluation modes.
+"""
+
+from utils import save_loss_plot
 
 if __name__ == "__main__":
     import torch.utils.data
     from torchvision import datasets, transforms
     from torchvision.utils import save_image
     
-
-    # python ddpm_run.py train --model model_ddpm.pt --device cuda --epochs 100 --batch-size 64 --network unet --lr 1e-3
-    # python ddpm_run.py sample --model model_ddpm.pt --device cuda --samples sample_ddpm.png
-    
-
-    # python ddpm_run.py train --model model_ddpm_bvae_unet.pt --beta-vae results_beta_flow/model_flow_beta_1e-06.pt --device cuda --epochs 100 --batch-size 64 --lr 1e-3 --network unet
-    # python ddpm_run.py sample --model model_ddpm_bvae_unet.pt --beta-vae results_beta_flow/model_flow_beta_1e-06.pt --device cuda --samples sample_ddpm_bvae_unet.png
-
-
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
@@ -35,13 +32,14 @@ if __name__ == "__main__":
     parser.add_argument('--T', type=int, default=1000, metavar='V',help='Number of steps in the diffusion process (default: %(default)s)')
 
     parser.add_argument('--plotname', type=str, default=None,help='filename for the loss plot (default: derived from model name)')
-    parser.add_argument('--saved-folder', type=str, default='output_PartB',help='folder for outputs (default: %(default)s)')
+    parser.add_argument('--saved-folder', type=str, default='models',help='folder for outputs (default: %(default)s)')
 
     # latent‑unet dims and resnet hyperparameters
+
     parser.add_argument('--latent-dims', type=int, nargs='+',default=[256, 128, 64],help='dimensions for the latent U‑Net (space separated list)')
     parser.add_argument('--resnet-hidden-dim', type=int, default=512, help='hidden dimension of LatentResNet (default: %(default)s)')
     parser.add_argument('--resnet-num-blocks', type=int, default=4,help='number of residual blocks for LatentResNet')
-    parser.add_argument('--resnet-time-dim', type=int, default=128,help='time‑embedding dimension for LatentResNet')
+    parser.add_argument('--resnet-time-dim', type=int, default=16,help='time‑embedding dimension for LatentResNet')
     
 
     parser.add_argument('--binarized', type=bool, default=False, choices=[True, False], help='Whether or not to binarize the images (default: %(default)s)')
@@ -63,65 +61,73 @@ if __name__ == "__main__":
 
     
     
-    # We must update train_loader and test_loader
-    if args.beta_vae :
-        from vae import vae_load
+    # We must update train_loader and test_loader (unless in sample mode)
+    decoder = None
+    encoder = None
 
-        temporary_hardcoded = {
-            'K': 32,
-            'latent_dim': 32,
-            'prior': 'mog',
-            'beta': 1
-            }
-        # Temporary hardcode
-        vae_model = vae_load(checkpoint_path=args.beta_vae, hardcoded_arguments=temporary_hardcoded,device=args.device)
+    if args.beta_vae:
+        from vae import vae_load_or_create
+
+        # Load model from checkpoint
+        vae_model = vae_load_or_create(
+            checkpoint_path=args.beta_vae,
+            device=args.device
+        )
 
         # Retrieve encoder and decoder
         encoder = vae_model.encoder
         decoder = vae_model.decoder
         args.binarized = True
-        
-        # Generate the data
-        data = MNIST.LatentMNIST(encoder=encoder,batch_size=args.batch_size,diffusion=False,binarized=True,device=args.device)
-        train_loader = data.train_loader
-        test_loader = data.test_loader
 
-    else :
-        # Generate the data
-        data = MNIST.MNIST(batch_size=args.batch_size,diffusion=not(args.binarized),binarized=args.binarized)
-        train_loader = data.train_loader
-        test_loader = data.test_loader
+    if args.mode != 'sample':
+        if args.beta_vae:
+            data = MNIST.LatentMNIST(encoder=encoder, batch_size=args.batch_size, diffusion=False, binarized=True, device=args.device)
+            train_loader = data.train_loader
+            test_loader = data.test_loader
+        else:
+            data = MNIST.MNIST(batch_size=args.batch_size, diffusion=not(args.binarized), binarized=args.binarized)
+            train_loader = data.train_loader
+            test_loader = data.test_loader
 
+        x_sample = next(iter(train_loader))
+        if isinstance(x_sample, (list, tuple)):
+            x_sample = x_sample[0]
 
+        D = x_sample.shape[1]
+        T = args.T
 
-    # Print the shape of a batch of data
-    x_sample = next(iter(train_loader))
-    if isinstance(x_sample, (list, tuple)):
-        x_sample = x_sample[0]
+        print("\n--- DataLoader Information ---")
+        print("Train Loader:")
+        print(f"  Number of batches: {len(train_loader)}")
+        print(f"  Batch size: {train_loader.batch_size}")
+        if hasattr(train_loader.dataset, '__len__'):
+            print(f"  Total elements: {len(train_loader.dataset)}")
+        else:
+            print("  Total elements: N/A (dataset does not have a length)")
 
-    # Define prior distribution shape
-    D = x_sample.shape[1]
-    
-    # Set the number of steps in the diffusion process
-    T = args.T
-
-    print("\n--- DataLoader Information ---")
-    print("Train Loader:")
-    print(f"  Number of batches: {len(train_loader)}")
-    print(f"  Batch size: {train_loader.batch_size}")
-    if hasattr(train_loader.dataset, '__len__'):
-        print(f"  Total elements: {len(train_loader.dataset)}")
+        print("Test Loader:")
+        print(f"  Number of batches: {len(test_loader)}")
+        print(f"  Batch size: {test_loader.batch_size}")
+        if hasattr(test_loader.dataset, '__len__'):
+            print(f"  Total elements: {len(test_loader.dataset)}")
+        else:
+            print("  Total elements: N/A (dataset does not have a length)")
+        print("----------------------------\n")
     else:
-        print("  Total elements: N/A (dataset does not have a length)")
+        # In sample mode we don't need full data loaders; use model checkpoint to infer D
+        ddpm_checkpoint_path = os.path.join(args.saved_folder, args.model)
+        if not os.path.exists(ddpm_checkpoint_path):
+            raise FileNotFoundError(f"DDPM checkpoint not found: {ddpm_checkpoint_path}")
+        _, D, checkpoint_beta_vae = ddpm_load(ddpm_checkpoint_path, args.device)
 
-    print("Test Loader:")
-    print(f"  Number of batches: {len(test_loader)}")
-    print(f"  Batch size: {test_loader.batch_size}")
-    if hasattr(test_loader.dataset, '__len__'):
-        print(f"  Total elements: {len(test_loader.dataset)}")
-    else:
-        print("  Total elements: N/A (dataset does not have a length)")
-    print("----------------------------\n")
+        # If BETA VAE is not provided explicitly, get it from DDPM checkpoint
+        if decoder is None and checkpoint_beta_vae is not None:
+            from vae import vae_load_or_create
+            vae_model = vae_load_or_create(checkpoint_path=checkpoint_beta_vae, device=args.device)
+            decoder = vae_model.decoder
+            args.binarized = True
+
+        T = args.T
 
     
 
@@ -196,27 +202,33 @@ if __name__ == "__main__":
             model_base_name = os.path.splitext(args.model)[0]
             plot_filename = f"loss_{model_base_name}.png"
         
-        plt.figure(figsize=(10, 6))
-        plt.plot(loss_history)
-        plt.title("Training Loss Evolution")
-        plt.xlabel("Training Step")
-        plt.ylabel("Loss")
-        plt.grid(True)
-        plt.savefig(os.path.join(args.saved_folder, plot_filename))
-        print(f"Loss plot saved to {os.path.join(args.saved_folder,args.model)}")
+        plot_path = os.path.join(args.saved_folder, plot_filename)
+        save_loss_plot(loss_history, plot_path, title="Training Loss Evolution", xlabel="Training Step", ylabel="Loss")
         torch.save(save_dict, os.path.join(args.saved_folder,args.model))
 
     elif args.mode == 'sample':
-        import numpy as np
+        # Load DDPM model and metadata (D, optional linked beta_vae)
+        model, ddpm_D, ddpm_beta_vae_path = ddpm_load(os.path.join(args.saved_folder, args.model), args.device)
+        D = D if 'D' in locals() and D is not None else ddpm_D
 
-        model, _, _ = ddpm_load(os.path.join(args.saved_folder, args.model), args.device)
+        # Determine VAE path: CLI override -> DDPM checkpoint link
+        vae_path = args.beta_vae if args.beta_vae else ddpm_beta_vae_path
+        if vae_path:
+            if not os.path.exists(vae_path):
+                raise FileNotFoundError(f"VAE checkpoint path does not exist: {vae_path}")
+            if decoder is None:
+                from vae import vae_load_or_create
+                vae_model = vae_load_or_create(checkpoint_path=vae_path, device=args.device)
+                decoder = vae_model.decoder
+                args.binarized = True
 
         model.eval()
         with torch.no_grad():
-            if args.beta_vae :
-                samples = decoder(model.sample((64,D))).mean.cpu()
-            else :
-                samples = model.sample((64,D)).cpu()
-            if not(args.binarized): # Diffusion
-                samples = samples / 2 + 0.5 # Reverse transformation
-            save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder,args.samples))
+            samples = model.sample((64, D))
+            if decoder is not None:
+                samples = decoder(samples).mean
+            elif not args.binarized:
+                samples = samples / 2 + 0.5
+
+            samples = samples.cpu()
+            save_image(samples.view(64, 1, 28, 28), os.path.join(args.saved_folder, args.samples))

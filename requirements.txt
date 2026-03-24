@@ -1,5 +1,9 @@
 torch
-tqdm
+torchvision
 numpy
-scipy
 matplotlib
+scipy
+tqdm
+pandas
+seaborn
+scikit-learn

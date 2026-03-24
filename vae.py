@@ -17,6 +17,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+"""
+Variational Autoencoder (VAE) implementation with support for different prior distributions.
+Includes Gaussian, Mixture of Gaussians, and Normalizing Flow priors for generative modeling.
+"""
+
 # Different prior types - Gaussian, MoG and Flow-based
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -231,80 +236,174 @@ class VAEDecoderNet(nn.Module):
     def forward(self, z):
         return self.network(z)
 
-def vae_load(checkpoint_path,hardcoded_arguments,device):
+def vae_load_or_create(checkpoint_path=None, latent_dim=32, prior_type='gaussian', beta=1.0, 
+                       device='cpu', K=32, mask_type='checkerboard'):
     """
-    Load a VAE model from a checkpoint, reconstructing the architecture.
+    Load a VAE model from a checkpoint if path is provided, otherwise create a new model.
+    
+    Args:
+        checkpoint_path (str, optional): Path to checkpoint to load. If None, creates new model.
+        latent_dim (int): Latent dimension for new model creation. Default: 32.
+        prior_type (str): Type of prior ('gaussian', 'mog', 'flow') for new model. Default: 'gaussian'.
+        beta (float): Beta parameter for new model. Default: 1.0.
+        device (str): Device to use. Default: 'cpu'.
+        K (int): Number of components for MoG prior. Default: 32.
+        mask_type (str): Mask type for flow prior. Default: 'checkerboard'.
+    
+    Returns:
+        VAE: The loaded or newly created model.
     """
     import argparse
-    checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
     
-    if isinstance(checkpoint, dict) and 'args' in checkpoint:
-        vae_args = argparse.Namespace(**checkpoint['args'])
-        vae_state_dict = checkpoint['model_state_dict']
-    else:
-        # Fallback/Hardcode logic for older or specific checkpoints as per user snippet
-        vae_args = argparse.Namespace()
-        for key, value in hardcoded_arguments.items():
-            vae_args.__setattr__(key, value)
+    # If checkpoint path is provided, load from it
+    if checkpoint_path is not None:
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"VAE checkpoint path does not exist: {checkpoint_path}")
 
-
-    M = vae_args.latent_dim
-    
-    # Reconstruct Prior
-    if vae_args.prior == 'gaussian':
-        prior = GaussianPrior(M)
-    elif vae_args.prior == 'mog':
-        prior = MoGPrior(M, getattr(vae_args, 'K', 10))
-    elif vae_args.prior == 'flow':
-        base = flow.GaussianBase(M)
-        transformations = []    
-        num_transformations = 12
-        num_hidden = 256
-        mask_type = getattr(vae_args, 'mask_type', 'checkerboard')
-
-        current_mask = None
-        if mask_type == 'checkerboard':
-            current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
-        elif mask_type == 'channelwise':
-            current_mask = torch.zeros((M,))
-            current_mask[M//2:] = 1
-
-        for i in range(num_transformations):
-            if mask_type == 'randominit':
-                current_mask = torch.randint(0, 2, (M,))
-            else:
-                if i > 0:
-                    current_mask = (1 - current_mask)
-            
-            scale_net = nn.Sequential(
-                nn.Linear(M, num_hidden),
-                nn.SiLU(), 
-                nn.Linear(num_hidden, num_hidden),
-                nn.SiLU(),
-                nn.Linear(num_hidden, M),
-                nn.Tanh()
-            )
-            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
-            transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
-        prior = FlowPrior(base, transformations)
-    else:
-        raise ValueError(f"Unknown prior type: {vae_args.prior}")
-
-    # Transform keys to match current VAE model structure
-    new_vae_state_dict = {}
-    for key, value in vae_state_dict.items():
-        if key.startswith('decoder.decoder_net.') and '.network.' not in key:
-            new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
-            new_vae_state_dict[new_key] = value
-        elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
-            new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
-            new_vae_state_dict[new_key] = value
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device(device))
+        
+        if isinstance(checkpoint, dict) and 'args' in checkpoint:
+            vae_args = argparse.Namespace(**checkpoint['args'])
         else:
-            new_vae_state_dict[key] = value
+            # Fallback logic for older or specific checkpoints
+            vae_args = argparse.Namespace()
+            # Use provided parameters as fallback
+            vae_args.__setattr__('latent_dim', latent_dim)
+            vae_args.__setattr__('prior', prior_type)
+            vae_args.__setattr__('beta', beta)
+            vae_args.__setattr__('K', K)
+            vae_args.__setattr__('mask_type', mask_type)
 
-    model = VAE(prior, BernoulliDecoder(VAEDecoderNet(M)), GaussianEncoder(VAEEncoderNet(M)), getattr(vae_args, 'beta', 1.0)).to(device)
-    model.load_state_dict(new_vae_state_dict)
-    return model
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            vae_state_dict = checkpoint['model_state_dict']
+        elif isinstance(checkpoint, dict):
+            vae_state_dict = checkpoint
+        else:
+            raise ValueError(f"Unrecognized checkpoint format: {type(checkpoint)}")
+        
+        M = vae_args.latent_dim
+        
+        # Reconstruct Prior
+        if vae_args.prior == 'gaussian':
+            prior = GaussianPrior(M)
+        elif vae_args.prior == 'mog':
+            prior = MoGPrior(M, getattr(vae_args, 'K', 10))
+        elif vae_args.prior == 'flow':
+            base = flow.GaussianBase(M)
+            transformations = []    
+            num_transformations = 12
+            num_hidden = 256
+            mask_type_load = getattr(vae_args, 'mask_type', 'checkerboard')
+
+            current_mask = None
+            if mask_type_load == 'checkerboard':
+                current_mask = torch.Tensor([1 if (j) % 2 == 0 else 0 for j in range(M)])
+            elif mask_type_load == 'channelwise':
+                current_mask = torch.zeros((M,))
+                current_mask[M//2:] = 1
+
+            for i in range(num_transformations):
+                if mask_type_load == 'randominit':
+                    current_mask = torch.randint(0, 2, (M,))
+                else:
+                    if i > 0:
+                        current_mask = (1 - current_mask)
+                
+                scale_net = nn.Sequential(
+                    nn.Linear(M, num_hidden),
+                    nn.SiLU(), 
+                    nn.Linear(num_hidden, num_hidden),
+                    nn.SiLU(),
+                    nn.Linear(num_hidden, M),
+                    nn.Tanh()
+                )
+                translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+                transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, current_mask))
+            prior = FlowPrior(base, transformations)
+        else:
+            raise ValueError(f"Unknown prior type: {vae_args.prior}")
+
+        # Transform keys to match current VAE model structure
+        new_vae_state_dict = {}
+        for key, value in vae_state_dict.items():
+            if key.startswith('decoder.decoder_net.') and '.network.' not in key:
+                new_key = key.replace('decoder.decoder_net.', 'decoder.decoder_net.network.', 1)
+                new_vae_state_dict[new_key] = value
+            elif key.startswith('encoder.encoder_net.') and '.network.' not in key:
+                new_key = key.replace('encoder.encoder_net.', 'encoder.encoder_net.network.', 1)
+                new_vae_state_dict[new_key] = value
+            else:
+                new_vae_state_dict[key] = value
+
+        model = VAE(prior, BernoulliDecoder(VAEDecoderNet(M)), GaussianEncoder(VAEEncoderNet(M)), getattr(vae_args, 'beta', 1.0)).to(device)
+        model.load_state_dict(new_vae_state_dict)
+        return model
+    
+    # Otherwise, create a new model
+    else:
+        M = latent_dim
+        
+        # Define prior distribution
+        if prior_type == 'gaussian':
+            prior = GaussianPrior(M)
+        elif prior_type == 'mog':
+            prior = MoGPrior(M, K)
+        else:  # flow
+            base = flow.GaussianBase(M)
+            transformations = []
+            num_transformations = 12
+            num_hidden = 256
+            
+            # Create the transformation mask
+            if mask_type == 'checkerboard':
+                mask = torch.Tensor([1 if (i) % 2 == 0 else 0 for i in range(M)])
+            elif mask_type == 'channelwise':
+                mask = torch.zeros((M,))
+                mask[M//2:] = 1
+            
+            # Create the transformation layers
+            for i in range(num_transformations):
+                if mask_type == 'randominit':
+                    mask = torch.randint(0, 2, (M,))
+                else:
+                    mask = (1 - mask)  # Flip the mask
+                
+                scale_net = nn.Sequential(
+                    nn.Linear(M, num_hidden),
+                    nn.SiLU(),
+                    nn.Linear(num_hidden, num_hidden),
+                    nn.SiLU(),
+                    nn.Linear(num_hidden, M),
+                    nn.Tanh()
+                )
+                translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+                transformations.append(flow.MaskedCouplingLayer(scale_net, translation_net, mask))
+            
+            prior = FlowPrior(base, transformations)
+        
+        # Define encoder and decoder networks
+        encoder = GaussianEncoder(VAEEncoderNet(M))
+        decoder = BernoulliDecoder(VAEDecoderNet(M))
+        
+        # Create VAE model
+        model = VAE(prior, decoder, encoder, beta).to(device)
+        return model
+
+def vae_load(checkpoint_path, device, latent_dim=32, prior_type='gaussian', beta=1.0, K=32, mask_type='checkerboard'):
+    """
+    Load a VAE model from a checkpoint, reconstructing the architecture.
+    
+    Deprecated: Use vae_load_or_create instead.
+    """
+    return vae_load_or_create(
+        checkpoint_path=checkpoint_path,
+        latent_dim=latent_dim,
+        prior_type=prior_type,
+        beta=beta,
+        device=device,
+        K=K,
+        mask_type=mask_type
+    )
 
 def train(model, optimizer, data_loader, epochs, device):
     """
@@ -506,7 +605,15 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model = vae_load(os.path.join(args.saved_folder, args.model),vars(args), args.device)
+            model = vae_load_or_create(
+                checkpoint_path=os.path.join(args.saved_folder, args.model),
+                latent_dim=args.latent_dim,
+                prior_type=args.prior,
+                beta=args.beta,
+                device=args.device,
+                K=args.K,
+                mask_type=args.mask_type
+            )
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)
@@ -630,7 +737,15 @@ if __name__ == "__main__":
         loaded_checkpoint = torch.load(os.path.join(args.saved_folder, args.model), map_location=torch.device(args.device))
         
         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
-            model = vae_load(os.path.join(args.saved_folder, args.model),vars(args), args.device)
+            model = vae_load_or_create(
+                checkpoint_path=os.path.join(args.saved_folder, args.model),
+                latent_dim=args.latent_dim,
+                prior_type=args.prior,
+                beta=args.beta,
+                device=args.device,
+                K=args.K,
+                mask_type=args.mask_type
+            )
         else:
             # Assume it's the old format where the checkpoint *is* the state_dict
             model.load_state_dict(loaded_checkpoint)

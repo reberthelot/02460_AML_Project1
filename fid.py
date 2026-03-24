@@ -2,8 +2,16 @@ import numpy as np
 import scipy
 import torch
 
+"""
+Utilities for computing Fréchet Inception Distance (FID) using a pre-trained MNIST classifier.
+Includes the classifier model and FID calculation functions.
+"""
 
 class Classifier(torch.nn.Module):
+    """
+    A simple convolutional neural network classifier for MNIST digits.
+    Used as a feature extractor for FID computation.
+    """
     def __init__(self):
         super(Classifier, self).__init__()
 
@@ -34,6 +42,16 @@ class Classifier(torch.nn.Module):
     
 
 def frechet_distance(x_a, x_b):
+    """
+    Compute the Fréchet distance between two multivariate Gaussians.
+    
+    Args:
+        x_a (np.ndarray): Samples from the first distribution, shape (N, D).
+        x_b (np.ndarray): Samples from the second distribution, shape (M, D).
+    
+    Returns:
+        float: The Fréchet distance between the two distributions.
+    """
     mu_a = np.mean(x_a, axis=0)
     sigma_a = np.cov(x_a.T)
     mu_b = np.mean(x_b, axis=0)

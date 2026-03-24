@@ -22,9 +22,13 @@
 
 # The following code is a modified version of the original code from the author. The original code can be found at
 # https://github.com/mfkasim1/score-based-tutorial/blob/main/03-SGM-with-SDE-MNIST.ipynb
-
 import torch
 import torch.nn as nn
+
+"""
+Neural network models for Denoising Diffusion Probabilistic Models (DDPMs), 
+including architectures for image and latent space processing.
+"""
 
 class Unet(nn.Module):
     """
@@ -128,14 +132,13 @@ class ResidualBlock(nn.Module):
         self.activation = nn.SiLU()
 
     def forward(self, x):
-        # The core of the residual connection: x + f(x)
         return self.activation(x + self.block(x))
 
 class LatentResNet(nn.Module):
     """
     A Residual MLP architecture for DDPMs operating on 1D latent vectors.
     """
-    def __init__(self, D, hidden_dim=512, num_blocks=4, time_dim=128):
+    def __init__(self, D, hidden_dim=512, num_blocks=4, time_dim=16):
         """
         Parameters:
         D: [int] Dimension of the input latent vector.
@@ -152,7 +155,6 @@ class LatentResNet(nn.Module):
         self.time_dim = time_dim
 
         # 1. Time Embedding MLP
-        # ...
         self.time_mlp = nn.Sequential(
             nn.Linear(1, time_dim),
             nn.SiLU(),
@@ -201,11 +203,11 @@ class LatentResNet(nn.Module):
             return (f"{self.__class__.__name__}(D={self.D}, hidden_dim={self.hidden_dim}, "
                     f"num_blocks={self.num_blocks}, time_dim={self.time_dim})")
 
-
 class LatentUnet(nn.Module):
     """
     A U-Net-like architecture for latent vectors that takes an input vector and time.
     This is intended for use in a DDPM operating on the latent space of a VAE.
+    It is far from being a real unet.
     """
     def __init__(self, D, dims=[256, 128, 64]):
         """
@@ -290,8 +292,6 @@ class LatentUnet(nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__}(D={self.D}, dims={self.dims})"
 
-
-
 class FcNetwork(nn.Module):
     def __init__(self, input_dim, num_hidden):
         """
@@ -320,4 +320,3 @@ class FcNetwork(nn.Module):
         """
         x_t_cat = torch.cat([x, t], dim=1)
         return self.network(x_t_cat)
-

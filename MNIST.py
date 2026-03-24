@@ -1,27 +1,27 @@
-# Code for DTU course 02460 (Advanced Machine Learning Spring) by Paul Jeha and Jes Frellsen, 2024
-# Modified to contain the MNIST class
+"""
+This script provides a set of classes for loading and pre-processing the MNIST dataset.
+The main classes are `MNIST` and `LatentMNIST`. `MNIST` loads the standard MNIST dataset,
+while `LatentMNIST` can be used to project the data into a latent space using a
+pre-trained encoder. The classes offer options for binarization and diffusion-style
+pre-processing.
+"""
 
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, TensorDataset
 
 class MNIST:
+    """
+    A simple class to define the MNIST distribution.
+    """
     def __init__(self, batch_size=64, diffusion=False, binarized=False):
         """
-        A simple class to define the MNIST distribution.
+        Initializes the MNIST dataset with optional transformations.
 
-        The behaviour is controlled by two boolean flags:
-          * ``diffusion``: if ``True`` the pixel values are rescaled from [0,1]
-            to [-1,1], which is common for diffusion models.
-          * ``binarized``: if ``True`` the images are thresholded to 0/1 after
-            adding a small bit of noise. This can be combined with ``diffusion``
-            to produce a centered binary version.
-
-        The four resulting modes are therefore:
-          1. neither flag: standard noisy MNIST in [0,1]
-          2. only ``diffusion``: centered in [-1,1]
-          3. only ``binarized``: binary {0,1} (with noise)
-          4. both flags: binary {0,1} but centred around zero before thresholding.
+        Args:
+            batch_size (int): The batch size for the data loaders.
+            diffusion (bool): If True, rescale pixel values to [-1, 1].
+            binarized (bool): If True, binarize the images to 0/1.
         """
         self.batch_size = batch_size
 
@@ -51,10 +51,20 @@ class MNIST:
 
 
 class LatentMNIST:
+    """
+    Modified MNIST class that can project data into a latent space.
+    If an 'encoder' is provided, the loaders will yield latent vectors (z).
+    """
     def __init__(self, encoder=None, batch_size=64, diffusion=False, binarized=False, device='cpu'):
         """
-        Modified MNIST class that can project data into a latent space.
-        If 'encoder' is provided, the loaders will yield latent vectors (z).
+        Initializes the LatentMNIST dataset.
+
+        Args:
+            encoder: A pre-trained encoder to transform the data.
+            batch_size (int): The batch size for the data loaders.
+            diffusion (bool): If True, rescale pixel values to [-1, 1].
+            binarized (bool): If True, binarize the images to 0/1.
+            device (str): The device to use for computations.
         """
         self.batch_size = batch_size
         self.device = device
@@ -85,7 +95,16 @@ class LatentMNIST:
             self.test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=True)
 
     def _convert_to_latent(self, dataset, encoder):
-        """Helper to pass the dataset through the VAE encoder once."""
+        """
+        Helper to pass the dataset through the VAE encoder once.
+
+        Args:
+            dataset: The dataset to convert.
+            encoder: The encoder to use for the conversion.
+
+        Returns:
+            A DataLoader with the latent representations of the data.
+        """
         encoder.to(self.device)
         encoder.eval()
         
@@ -97,15 +116,10 @@ class LatentMNIST:
         with torch.no_grad():
             for x, y in temp_loader:
                 x = x.to(self.device)
-                # Assuming VAE returns (z, mu, logvar) or just z
-                # We typically use 'mu' or a sample 'z' for the latent representation
                 res = encoder(x)
-                # z = res[0] if isinstance(res, (tuple, list)) else res
-                # # The encoder returns a distribution object, we need its mean for the latent representation
                 z = res.mean
                 
                 all_z.append(z.cpu())
                 all_y.append(y)
-        # Create a new TensorDataset so fetching is lightning fast
         latent_ds = TensorDataset(torch.cat(all_z), torch.cat(all_y))
         return DataLoader(latent_ds, batch_size=self.batch_size, shuffle=True)
